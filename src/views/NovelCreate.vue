@@ -137,6 +137,18 @@ const handleRegenerate = async () => {
 }
 
 /**
+ * 深度清理对象，确保可以被 IndexedDB 克隆
+ */
+const sanitizeForDB = (obj) => {
+  if (obj === null || obj === undefined) return null
+  try {
+    return JSON.parse(JSON.stringify(obj))
+  } catch {
+    return null
+  }
+}
+
+/**
  * 保存小说
  */
 const handleSave = async () => {
@@ -147,27 +159,19 @@ const handleSave = async () => {
 
   try {
     const novel = {
-      title: generatedOverview.value.title || '',
-      description: generatedOverview.value.description || '',
-      style: Array.isArray(generatedOverview.value.style) ? [...generatedOverview.value.style] : [],
-      estimatedWords: generatedOverview.value.estimatedWords || '',
-      plotLines: {
-        main: generatedOverview.value.plotLines?.main || '',
-        sub: Array.isArray(generatedOverview.value.plotLines?.sub)
-          ? [...generatedOverview.value.plotLines.sub]
-          : [],
-      },
-      outline: Array.isArray(generatedOverview.value.outline)
-        ? generatedOverview.value.outline.map((vol) => ({
-            volume: vol.volume || '',
-            chapters: vol.chapters || '',
-            summary: vol.summary || '',
-          }))
-        : [],
+      title: String(generatedOverview.value.title || ''),
+      description: String(generatedOverview.value.description || ''),
+      style: sanitizeForDB(generatedOverview.value.style) || [],
+      estimatedWords: String(generatedOverview.value.estimatedWords || ''),
+      worldSetting: sanitizeForDB(generatedOverview.value.worldSetting),
+      characters: sanitizeForDB(generatedOverview.value.characters),
+      plotLines: sanitizeForDB(generatedOverview.value.plotLines) || { main: '', sub: [] },
+      conflicts: sanitizeForDB(generatedOverview.value.conflicts),
+      outline: sanitizeForDB(generatedOverview.value.outline) || [],
       chapterStructure: {
-        totalChapters: generatedOverview.value.chapterStructure?.totalChapters || 0,
-        minWordsPerChapter: generatedOverview.value.chapterStructure?.minWordsPerChapter || 0,
-        maxWordsPerChapter: generatedOverview.value.chapterStructure?.maxWordsPerChapter || 0,
+        totalChapters: Number(generatedOverview.value.chapterStructure?.totalChapters) || 0,
+        minWordsPerChapter: Number(generatedOverview.value.chapterStructure?.minWordsPerChapter) || 0,
+        maxWordsPerChapter: Number(generatedOverview.value.chapterStructure?.maxWordsPerChapter) || 0,
       },
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -176,6 +180,7 @@ const handleSave = async () => {
     message.success('保存成功！')
     router.push(`/novel/${id}`)
   } catch (error) {
+    console.error('保存失败详情:', error)
     message.error('保存失败：' + error.message)
   }
 }
@@ -342,40 +347,260 @@ const handleBack = () => {
               </a-form-item>
 
               <a-form-item label="章节结构">
-                <a-row :gutter="12">
-                  <a-col :span="8">
-                    <a-input-number
-                      v-model:value="generatedOverview.chapterStructure.totalChapters"
-                      placeholder="总章节数"
-                      size="large"
-                      class="form-number"
-                      :min="1"
-                    />
-                  </a-col>
-                  <a-col :span="8">
-                    <a-input-number
-                      v-model:value="generatedOverview.chapterStructure.minWordsPerChapter"
-                      placeholder="最小字数"
-                      size="large"
-                      class="form-number"
-                      :min="500"
-                      :step="100"
-                    />
-                  </a-col>
-                  <a-col :span="8">
-                    <a-input-number
-                      v-model:value="generatedOverview.chapterStructure.maxWordsPerChapter"
-                      placeholder="最大字数"
-                      size="large"
-                      class="form-number"
-                      :min="500"
-                      :step="100"
-                    />
-                  </a-col>
-                </a-row>
+                <div class="chapter-structure-card">
+                  <a-row :gutter="16">
+                    <a-col :span="8">
+                      <div class="structure-item">
+                        <span class="structure-label">📚 总章节数</span>
+                        <a-input-number
+                          v-model:value="generatedOverview.chapterStructure.totalChapters"
+                          placeholder="如100"
+                          size="large"
+                          class="form-number"
+                          :min="1"
+                        >
+                          <template #addonAfter>章</template>
+                        </a-input-number>
+                      </div>
+                    </a-col>
+                    <a-col :span="8">
+                      <div class="structure-item">
+                        <span class="structure-label">📝 每章最小字数</span>
+                        <a-input-number
+                          v-model:value="generatedOverview.chapterStructure.minWordsPerChapter"
+                          placeholder="如2000"
+                          size="large"
+                          class="form-number"
+                          :min="500"
+                          :step="100"
+                        >
+                          <template #addonAfter>字</template>
+                        </a-input-number>
+                      </div>
+                    </a-col>
+                    <a-col :span="8">
+                      <div class="structure-item">
+                        <span class="structure-label">📏 每章最大字数</span>
+                        <a-input-number
+                          v-model:value="generatedOverview.chapterStructure.maxWordsPerChapter"
+                          placeholder="如3000"
+                          size="large"
+                          class="form-number"
+                          :min="500"
+                          :step="100"
+                        >
+                          <template #addonAfter>字</template>
+                        </a-input-number>
+                      </div>
+                    </a-col>
+                  </a-row>
+                  <div class="structure-hint">
+                    💡 建议：短篇10-30万字，中篇30-80万字，长篇80万字以上。每章2000-4000字为宜。
+                  </div>
+                </div>
               </a-form-item>
             </a-col>
           </a-row>
+
+          <a-divider class="section-divider" />
+
+          <!-- 世界观设定 -->
+          <a-form-item v-if="generatedOverview.worldSetting">
+            <template #label>
+              <span class="section-label">🌍 世界观设定</span>
+            </template>
+            <div class="world-setting-card">
+              <a-row :gutter="16">
+                <a-col :span="12">
+                  <a-form-item label="时代背景">
+                    <a-input
+                      v-model:value="generatedOverview.worldSetting.era"
+                      placeholder="故事发生的时代"
+                      class="compact-input"
+                    />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="12">
+                  <a-form-item label="主要地点">
+                    <a-input
+                      v-model:value="generatedOverview.worldSetting.location"
+                      placeholder="主要故事发生地点"
+                      class="compact-input"
+                    />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+              <a-row :gutter="16">
+                <a-col :span="12">
+                  <a-form-item label="力量体系">
+                    <a-input
+                      v-model:value="generatedOverview.worldSetting.powerSystem"
+                      placeholder="等级设定/力量体系"
+                      class="compact-input"
+                    />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="12">
+                  <a-form-item label="社会结构">
+                    <a-input
+                      v-model:value="generatedOverview.worldSetting.socialStructure"
+                      placeholder="势力分布/社会阶层"
+                      class="compact-input"
+                    />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+              <a-form-item label="特殊设定">
+                <a-textarea
+                  v-model:value="generatedOverview.worldSetting.specialElements"
+                  :rows="2"
+                  placeholder="独特的世界观元素"
+                  class="compact-textarea"
+                />
+              </a-form-item>
+            </div>
+          </a-form-item>
+
+          <!-- 人物角色 -->
+          <a-form-item v-if="generatedOverview.characters">
+            <template #label>
+              <span class="section-label">👥 人物角色</span>
+            </template>
+            <div class="characters-section">
+              <!-- 主角信息 -->
+              <div v-if="generatedOverview.characters.protagonist" class="protagonist-card">
+                <div class="character-header">
+                  <span class="character-badge protagonist-badge">主角</span>
+                  <span class="character-name">{{ generatedOverview.characters.protagonist.name }}</span>
+                </div>
+                <a-row :gutter="16">
+                  <a-col :span="8">
+                    <a-form-item label="姓名">
+                      <a-input
+                        v-model:value="generatedOverview.characters.protagonist.name"
+                        class="compact-input"
+                      />
+                    </a-form-item>
+                  </a-col>
+                  <a-col :span="8">
+                    <a-form-item label="年龄">
+                      <a-input
+                        v-model:value="generatedOverview.characters.protagonist.age"
+                        class="compact-input"
+                      />
+                    </a-form-item>
+                  </a-col>
+                  <a-col :span="8">
+                    <a-form-item label="身份">
+                      <a-input
+                        v-model:value="generatedOverview.characters.protagonist.identity"
+                        class="compact-input"
+                      />
+                    </a-form-item>
+                  </a-col>
+                </a-row>
+                <a-row :gutter="16">
+                  <a-col :span="12">
+                    <a-form-item label="性格特点">
+                      <a-input
+                        v-model:value="generatedOverview.characters.protagonist.personality"
+                        class="compact-input"
+                      />
+                    </a-form-item>
+                  </a-col>
+                  <a-col :span="12">
+                    <a-form-item label="核心目标">
+                      <a-input
+                        v-model:value="generatedOverview.characters.protagonist.goal"
+                        class="compact-input"
+                      />
+                    </a-form-item>
+                  </a-col>
+                </a-row>
+                <a-form-item label="背景故事">
+                  <a-textarea
+                    v-model:value="generatedOverview.characters.protagonist.background"
+                    :rows="2"
+                    class="compact-textarea"
+                  />
+                </a-form-item>
+                <a-form-item label="特殊能力">
+                  <a-input
+                    v-model:value="generatedOverview.characters.protagonist.specialAbility"
+                    placeholder="金手指/特殊能力（无则留空）"
+                    class="compact-input"
+                  />
+                </a-form-item>
+              </div>
+
+              <!-- 配角列表 -->
+              <div v-if="generatedOverview.characters.supportingCharacters" class="supporting-characters">
+                <div class="sub-section-title">重要配角</div>
+                <div
+                  v-for="(character, index) in generatedOverview.characters.supportingCharacters"
+                  :key="index"
+                  class="supporting-character-card"
+                >
+                  <div class="character-header">
+                    <span class="character-badge supporting-badge">配角</span>
+                    <a-input
+                      v-model:value="character.name"
+                      placeholder="姓名"
+                      class="character-name-input"
+                    />
+                  </div>
+                  <a-row :gutter="12">
+                    <a-col :span="8">
+                      <a-form-item label="身份">
+                        <a-input v-model:value="character.identity" class="compact-input-sm" />
+                      </a-form-item>
+                    </a-col>
+                    <a-col :span="8">
+                      <a-form-item label="性格">
+                        <a-input v-model:value="character.personality" class="compact-input-sm" />
+                      </a-form-item>
+                    </a-col>
+                    <a-col :span="8">
+                      <a-form-item label="作用">
+                        <a-input v-model:value="character.role" class="compact-input-sm" />
+                      </a-form-item>
+                    </a-col>
+                  </a-row>
+                </div>
+              </div>
+            </div>
+          </a-form-item>
+
+          <!-- 核心冲突 -->
+          <a-form-item v-if="generatedOverview.conflicts">
+            <template #label>
+              <span class="section-label">⚔️ 核心冲突</span>
+            </template>
+            <div class="conflicts-card">
+              <a-row :gutter="16">
+                <a-col :span="12">
+                  <a-form-item label="外部冲突">
+                    <a-textarea
+                      v-model:value="generatedOverview.conflicts.external"
+                      :rows="3"
+                      placeholder="主角面对的外部障碍/敌人"
+                      class="compact-textarea"
+                    />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="12">
+                  <a-form-item label="内部冲突">
+                    <a-textarea
+                      v-model:value="generatedOverview.conflicts.internal"
+                      :rows="3"
+                      placeholder="主角内心的矛盾/成长"
+                      class="compact-textarea"
+                    />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+            </div>
+          </a-form-item>
 
           <a-divider class="section-divider" />
 
@@ -714,5 +939,143 @@ const handleBack = () => {
 
 :deep(.ant-spin-dot-item) {
   background-color: #667eea;
+}
+
+/* 新增要素样式 */
+.section-label {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.world-setting-card,
+.conflicts-card {
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 8px;
+}
+
+.compact-input {
+  border-radius: 8px;
+}
+
+.compact-textarea {
+  border-radius: 8px;
+}
+
+.compact-input-sm {
+  border-radius: 6px;
+}
+
+.characters-section {
+  margin-top: 8px;
+}
+
+.protagonist-card {
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 16px;
+  border-left: 4px solid #3b82f6;
+}
+
+.character-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.character-badge {
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.protagonist-badge {
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  color: white;
+}
+
+.supporting-badge {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+}
+
+.character-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.character-name-input {
+  flex: 1;
+  max-width: 200px;
+  border-radius: 6px;
+}
+
+.supporting-characters {
+  margin-top: 16px;
+}
+
+.sub-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: 12px;
+}
+
+.supporting-character-card {
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+  border-left: 3px solid #10b981;
+}
+
+.supporting-character-card:last-child {
+  margin-bottom: 0;
+}
+
+/* 章节结构样式 */
+.chapter-structure-card {
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 8px;
+}
+
+.structure-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.structure-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #475569;
+}
+
+.form-number {
+  width: 100%;
+  border-radius: 8px;
+}
+
+.form-number :deep(.ant-input-number-group-addon) {
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.structure-hint {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #92400e;
 }
 </style>

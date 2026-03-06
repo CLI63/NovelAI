@@ -372,6 +372,107 @@ onMounted(() => {
                   <p class="outline-text">{{ novel.description }}</p>
                 </div>
 
+                <!-- 世界观设定 -->
+                <div v-if="novel.worldSetting" class="outline-section">
+                  <h3 class="section-title">🌍 世界观设定</h3>
+                  <div class="world-setting-grid">
+                    <div v-if="novel.worldSetting.era" class="setting-item">
+                      <span class="setting-label">时代背景：</span>
+                      <span class="setting-value">{{ novel.worldSetting.era }}</span>
+                    </div>
+                    <div v-if="novel.worldSetting.location" class="setting-item">
+                      <span class="setting-label">主要地点：</span>
+                      <span class="setting-value">{{ novel.worldSetting.location }}</span>
+                    </div>
+                    <div v-if="novel.worldSetting.powerSystem" class="setting-item">
+                      <span class="setting-label">力量体系：</span>
+                      <span class="setting-value">{{ novel.worldSetting.powerSystem }}</span>
+                    </div>
+                    <div v-if="novel.worldSetting.socialStructure" class="setting-item">
+                      <span class="setting-label">社会结构：</span>
+                      <span class="setting-value">{{ novel.worldSetting.socialStructure }}</span>
+                    </div>
+                    <div v-if="novel.worldSetting.specialElements" class="setting-item full-width">
+                      <span class="setting-label">特殊设定：</span>
+                      <span class="setting-value">{{ novel.worldSetting.specialElements }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 人物角色 -->
+                <div v-if="novel.characters && novel.characters.protagonist" class="outline-section">
+                  <h3 class="section-title">👥 人物角色</h3>
+                  <div class="characters-display">
+                    <!-- 主角 -->
+                    <div class="character-display-card protagonist">
+                      <div class="character-display-header">
+                        <span class="character-type-badge protagonist">主角</span>
+                        <span class="character-display-name">{{ novel.characters.protagonist.name }}</span>
+                      </div>
+                      <div class="character-display-info">
+                        <div class="info-row">
+                          <span class="info-label">身份：</span>
+                          <span class="info-value">{{ novel.characters.protagonist.identity }}</span>
+                        </div>
+                        <div class="info-row">
+                          <span class="info-label">性格：</span>
+                          <span class="info-value">{{ novel.characters.protagonist.personality }}</span>
+                        </div>
+                        <div class="info-row">
+                          <span class="info-label">目标：</span>
+                          <span class="info-value">{{ novel.characters.protagonist.goal }}</span>
+                        </div>
+                        <div v-if="novel.characters.protagonist.specialAbility" class="info-row">
+                          <span class="info-label">特殊能力：</span>
+                          <span class="info-value highlight">{{ novel.characters.protagonist.specialAbility }}</span>
+                        </div>
+                        <div v-if="novel.characters.protagonist.background" class="info-row">
+                          <span class="info-label">背景：</span>
+                          <span class="info-value">{{ novel.characters.protagonist.background }}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <!-- 配角 -->
+                    <div v-if="novel.characters.supportingCharacters && novel.characters.supportingCharacters.length > 0" class="supporting-characters-display">
+                      <div v-for="(character, index) in novel.characters.supportingCharacters" :key="index" class="character-display-card supporting">
+                        <div class="character-display-header">
+                          <span class="character-type-badge supporting">配角</span>
+                          <span class="character-display-name">{{ character.name }}</span>
+                        </div>
+                        <div class="character-display-info">
+                          <div class="info-row">
+                            <span class="info-label">身份：</span>
+                            <span class="info-value">{{ character.identity }}</span>
+                          </div>
+                          <div class="info-row">
+                            <span class="info-label">性格：</span>
+                            <span class="info-value">{{ character.personality }}</span>
+                          </div>
+                          <div class="info-row">
+                            <span class="info-label">作用：</span>
+                            <span class="info-value">{{ character.role }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 核心冲突 -->
+                <div v-if="novel.conflicts" class="outline-section">
+                  <h3 class="section-title">⚔️ 核心冲突</h3>
+                  <div class="conflicts-display">
+                    <div v-if="novel.conflicts.external" class="conflict-item external">
+                      <span class="conflict-label">外部冲突</span>
+                      <p class="conflict-content">{{ novel.conflicts.external }}</p>
+                    </div>
+                    <div v-if="novel.conflicts.internal" class="conflict-item internal">
+                      <span class="conflict-label">内部冲突</span>
+                      <p class="conflict-content">{{ novel.conflicts.internal }}</p>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="outline-section">
                   <h3 class="section-title">🎭 主线剧情</h3>
                   <p class="outline-text">{{ novel.plotLines.main }}</p>
@@ -842,5 +943,164 @@ onMounted(() => {
 
 :deep(.ant-spin-dot-item) {
   background-color: #667eea;
+}
+
+/* 世界观设定样式 */
+.world-setting-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 16px;
+  background: #f8fafc;
+  border-radius: 12px;
+  border-left: 4px solid #3b82f6;
+}
+
+.setting-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.setting-item.full-width {
+  grid-column: span 2;
+}
+
+.setting-label {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.setting-value {
+  color: #1e293b;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* 人物角色样式 */
+.characters-display {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.character-display-card {
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.character-display-card.protagonist {
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+  border-left: 4px solid #3b82f6;
+}
+
+.character-display-card.supporting {
+  background: #f8fafc;
+  border-left: 3px solid #10b981;
+}
+
+.supporting-characters-display {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.character-display-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.character-type-badge {
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.character-type-badge.protagonist {
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  color: white;
+}
+
+.character-type-badge.supporting {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+}
+
+.character-display-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.character-display-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.info-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.info-label {
+  color: #64748b;
+  font-size: 13px;
+  min-width: 70px;
+}
+
+.info-value {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.info-value.highlight {
+  color: #f59e0b;
+  font-weight: 500;
+}
+
+/* 核心冲突样式 */
+.conflicts-display {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+.conflict-item {
+  padding: 16px;
+  border-radius: 12px;
+}
+
+.conflict-item.external {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border-left: 4px solid #f59e0b;
+}
+
+.conflict-item.internal {
+  background: linear-gradient(135deg, #fce7f3 0%, #fbcfe8 100%);
+  border-left: 4px solid #ec4899;
+}
+
+.conflict-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 8px;
+}
+
+.conflict-content {
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0;
 }
 </style>

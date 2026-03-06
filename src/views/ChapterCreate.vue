@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import { callAI } from '../utils/api'
-import { buildChapterGenerationPrompt } from '../utils/prompts'
+import { buildChapterGenerationPrompt, buildContentSupplementPrompt } from '../utils/prompts'
 import { novelDao, chapterDao } from '../utils/dao'
 import { message, Modal } from 'ant-design-vue'
 
@@ -489,6 +489,90 @@ const addQuickFeedback = (text) => {
   }
 }
 
+/**
+ * 补充章节内容
+ * @param {number} chapterIndex - 章节索引
+ */
+const handleSupplementContent = async (chapterIndex) => {
+  const chapter = generatedChapters.value.chapters[chapterIndex]
+  if (!chapter) return
+
+  const apiKey = appStore.getCurrentApiKey()
+  if (!apiKey) {
+    message.warning('请先在设置中配置API Key')
+    router.push('/settings')
+    return
+  }
+
+  const currentWords = chapter.content.length
+  const targetWords = minWords.value
+
+  if (currentWords >= targetWords) {
+    message.info('当前章节字数已达标，无需补充')
+    return
+  }
+
+  // 设置补充状态
+  if (!generatedChapters.value.supplementing) {
+    generatedChapters.value.supplementing = {}
+  }
+  generatedChapters.value.supplementing[chapterIndex] = true
+
+  try {
+    const messages = buildContentSupplementPrompt(novel.value, chapter, targetWords, currentWords)
+    const model =
+      appStore.settings.aiProvider === 'kimi'
+        ? appStore.settings.kimiModel
+        : appStore.settings.qianwenModel
+    const response = await callAI(messages, appStore.settings.aiProvider, apiKey, model)
+
+    const jsonMatch = response.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      const parsedData = JSON.parse(jsonMatch[0])
+      if (parsedData.content) {
+        generatedChapters.value.chapters[chapterIndex].content = parsedData.content
+        message.success(`内容补充成功！当前字数：${parsedData.content.length}字`)
+      }
+    } else {
+      message.error('AI返回格式错误，请重试')
+    }
+  } catch (error) {
+    message.error('补充失败：' + error.message)
+  } finally {
+    generatedChapters.value.supplementing[chapterIndex] = false
+  }
+}
+
+/**
+ * 一键补充所有字数不足的章节
+ */
+const handleSupplementAll = async () => {
+  const underMinWords = generatedChapters.value.chapters.filter(
+    (ch) => ch.content.length < minWords.value
+  )
+
+  if (underMinWords.length === 0) {
+    message.info('所有章节字数已达标')
+    return
+  }
+
+  Modal.confirm({
+    title: '批量补充内容',
+    content: `检测到 ${underMinWords.length} 个章节字数不足，是否逐一补充？这可能需要较长时间。`,
+    okText: '开始补充',
+    cancelText: '取消',
+    onOk: async () => {
+      for (let i = 0; i < generatedChapters.value.chapters.length; i++) {
+        const chapter = generatedChapters.value.chapters[i]
+        if (chapter.content.length < minWords.value) {
+          await handleSupplementContent(i)
+        }
+      }
+      message.success('批量补充完成！')
+    },
+  })
+}
+
 onMounted(() => {
   loadNovel()
 })
@@ -597,7 +681,7 @@ onMounted(() => {
                 生成配置
               </h3>
               <a-row :gutter="24">
-                <!-- <a-col :span="8">
+                <a-col :span="8">
                   <a-form-item label="生成章节数量">
                     <a-input-number
                       v-model:value="chapterCount"
@@ -606,8 +690,9 @@ onMounted(() => {
                       size="large"
                       class="config-input"
                     />
+                    <div class="input-hint">一次最多生成10章</div>
                   </a-form-item>
-                </a-col> -->
+                </a-col>
                 <a-col :span="8">
                   <a-form-item label="最小字数">
                     <a-input-number
@@ -725,15 +810,27 @@ onMounted(() => {
               <a-form-item label="章节内容" class="form-item-compact">
                 <div class="content-header">
                   <span class="content-hint">字数要求: {{ minWords }} - {{ maxWords }} 字</span>
-                  <a-tag
-                    :color="chapter.content.length >= minWords ? 'success' : 'warning'"
-                    class="word-status"
-                  >
-                    {{ chapter.content.length }} 字
-                    <span v-if="chapter.content.length < minWords" class="word-remaining">
-                      (还需 {{ minWords - chapter.content.length }} 字)
-                    </span>
-                  </a-tag>
+                  <div class="content-actions">
+                    <a-tag
+                      :color="chapter.content.length >= minWords ? 'success' : 'warning'"
+                      class="word-status"
+                    >
+                      {{ chapter.content.length }} 字
+                      <span v-if="chapter.content.length < minWords" class="word-remaining">
+                        (还需 {{ minWords - chapter.content.length }} 字)
+                      </span>
+                    </a-tag>
+                    <a-button
+                      v-if="chapter.content.length < minWords"
+                      type="link"
+                      size="small"
+                      :loading="generatedChapters.supplementing && generatedChapters.supplementing[index]"
+                      @click="handleSupplementContent(index)"
+                      class="supplement-btn"
+                    >
+                      AI补充内容
+                    </a-button>
+                  </div>
                 </div>
                 <a-textarea v-model:value="chapter.content" :rows="12" class="content-textarea" />
               </a-form-item>
@@ -814,6 +911,17 @@ onMounted(() => {
                   <span class="btn-icon">💾</span>
                 </template>
                 保存章节
+              </a-button>
+              <a-button
+                v-if="generatedChapters.chapters.some(ch => ch.content.length < minWords)"
+                size="large"
+                @click="handleSupplementAll"
+                class="supplement-all-btn"
+              >
+                <template #icon>
+                  <span class="btn-icon">📝</span>
+                </template>
+                一键补充字数
               </a-button>
               <a-button
                 size="large"
@@ -1089,6 +1197,12 @@ onMounted(() => {
   border-radius: 8px;
 }
 
+.input-hint {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
 .prompt-textarea,
 .feedback-textarea {
   border-radius: 8px;
@@ -1245,6 +1359,22 @@ onMounted(() => {
   margin-bottom: 6px;
 }
 
+.content-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.supplement-btn {
+  color: #667eea;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.supplement-btn:hover {
+  color: #764ba2;
+}
+
 .content-hint {
   font-size: 12px;
   color: #999;
@@ -1317,6 +1447,25 @@ onMounted(() => {
   border-radius: 10px;
   font-size: 16px;
   font-weight: 500;
+}
+
+.supplement-all-btn {
+  height: 44px;
+  padding: 0 24px;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 500;
+  background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%);
+  border: none;
+  color: white;
+  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.4);
+  transition: all 0.3s ease;
+}
+
+.supplement-all-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(245, 158, 11, 0.5);
+  color: white;
 }
 
 .back-btn-secondary {
