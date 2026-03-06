@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useAppStore } from '../stores/app'
 import { message, Modal } from 'ant-design-vue'
+import db from '../utils/db'
 
 const appStore = useAppStore()
 
@@ -111,6 +112,108 @@ const handleClearData = () => {
       message.success('数据已清除，请刷新页面')
     },
   })
+}
+
+// 导出数据库
+const handleExportData = async () => {
+  loading.value = true
+  try {
+    const novels = await db.novels.toArray()
+    const chapters = await db.chapters.toArray()
+    const settings = localStorage.getItem('novelAISettings')
+
+    const exportData = {
+      version: '1.0',
+      exportTime: new Date().toISOString(),
+      data: {
+        novels,
+        chapters,
+        settings: settings ? JSON.parse(settings) : null
+      }
+    }
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `novel-ai-backup-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+
+    message.success(`导出成功：${novels.length} 部小说，${chapters.length} 个章节`)
+  } catch (error) {
+    message.error('导出失败：' + error.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+// 导入数据库
+const importInputRef = ref(null)
+
+const triggerImport = () => {
+  importInputRef.value?.click()
+}
+
+const handleImportData = async (event) => {
+  const file = event.target.files?.[0]
+  if (!file) return
+
+  // 重置 input，允许重复选择同一文件
+  event.target.value = ''
+
+  loading.value = true
+  try {
+    const text = await file.text()
+    const importData = JSON.parse(text)
+
+    // 验证数据格式
+    if (!importData.version || !importData.data) {
+      throw new Error('无效的备份文件格式')
+    }
+
+    const { novels = [], chapters = [], settings = null } = importData.data
+
+    // 确认导入
+    Modal.confirm({
+      title: '📦 导入数据确认',
+      content: `即将导入 ${novels.length} 部小说和 ${chapters.length} 个章节。现有数据将被覆盖，是否继续？`,
+      okText: '确认导入',
+      cancelText: '取消',
+      centered: true,
+      onOk: async () => {
+        try {
+          // 清空现有数据
+          await db.novels.clear()
+          await db.chapters.clear()
+
+          // 导入新数据（使用 bulkPut 保留原始 ID）
+          if (novels.length > 0) {
+            await db.novels.bulkPut(novels)
+          }
+          if (chapters.length > 0) {
+            await db.chapters.bulkPut(chapters)
+          }
+
+          // 导入设置
+          if (settings) {
+            localStorage.setItem('novelAISettings', JSON.stringify(settings))
+            loadSettings()
+          }
+
+          message.success('导入成功，请刷新页面查看')
+        } catch (err) {
+          message.error('导入数据时出错：' + err.message)
+        }
+      }
+    })
+  } catch (error) {
+    message.error('解析文件失败：' + error.message)
+  } finally {
+    loading.value = false
+  }
 }
 
 onMounted(() => {
@@ -276,6 +379,50 @@ onMounted(() => {
         <!-- 数据管理 -->
         <a-tab-pane key="data" tab="💾 数据管理">
           <div class="tab-content">
+            <!-- 数据迁移区域 -->
+            <div class="section-header">
+              <h3 class="section-title">📦 数据迁移</h3>
+              <p class="section-desc">导出或导入数据，方便更换电脑后的数据迁移</p>
+            </div>
+
+            <div class="migration-zone">
+              <div class="migration-card export-card">
+                <div class="migration-icon">📤</div>
+                <div class="migration-content">
+                  <h4 class="migration-title">导出数据</h4>
+                  <p class="migration-desc">将所有小说、章节和设置导出为 JSON 文件，用于备份或迁移到其他设备</p>
+                </div>
+                <a-button type="primary" size="large" @click="handleExportData" :loading="loading" class="migration-btn export-btn">
+                  <template #icon>
+                    <span class="btn-icon">📤</span>
+                  </template>
+                  导出数据
+                </a-button>
+              </div>
+
+              <div class="migration-card import-card">
+                <div class="migration-icon">📥</div>
+                <div class="migration-content">
+                  <h4 class="migration-title">导入数据</h4>
+                  <p class="migration-desc">从备份文件恢复数据，将覆盖现有数据，请谨慎操作</p>
+                </div>
+                <a-button size="large" @click="triggerImport" :loading="loading" class="migration-btn import-btn">
+                  <template #icon>
+                    <span class="btn-icon">📥</span>
+                  </template>
+                  导入数据
+                </a-button>
+                <input
+                  ref="importInputRef"
+                  type="file"
+                  accept=".json"
+                  style="display: none"
+                  @change="handleImportData"
+                />
+              </div>
+            </div>
+
+            <!-- 危险操作区域 -->
             <div class="section-header warning">
               <h3 class="section-title">⚠️ 危险操作区域</h3>
               <p class="section-desc">以下操作可能会删除您的数据，请谨慎操作</p>
@@ -305,7 +452,7 @@ onMounted(() => {
             <a-alert message="💡 数据备份建议" type="warning" show-icon class="warning-alert">
               <template #description>
                 <p>
-                  建议定期导出重要的小说内容进行备份。您可以在小说详情页使用"导出"功能保存作品。
+                  建议定期使用"导出数据"功能备份所有数据，在更换电脑或浏览器时可通过"导入数据"恢复。
                 </p>
               </template>
             </a-alert>
@@ -622,6 +769,90 @@ onMounted(() => {
   margin-bottom: 24px;
 }
 
+/* 数据迁移区域 */
+.migration-zone {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  margin-bottom: 32px;
+}
+
+.migration-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 28px 24px;
+  border-radius: 12px;
+  text-align: center;
+}
+
+.export-card {
+  background: linear-gradient(135deg, #e6f7ff 0%, #f0f5ff 100%);
+  border: 1px solid #adc6ff;
+}
+
+.import-card {
+  background: linear-gradient(135deg, #f6ffed 0%, #f4fffb 100%);
+  border: 1px solid #b7eb8f;
+}
+
+.migration-icon {
+  font-size: 40px;
+}
+
+.migration-content {
+  flex: 1;
+}
+
+.migration-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin: 0 0 8px 0;
+}
+
+.migration-desc {
+  font-size: 13px;
+  color: #666;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.migration-btn {
+  height: 44px;
+  padding: 0 24px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.export-btn {
+  background: linear-gradient(135deg, #1890ff 0%, #096dd9 100%);
+  border: none;
+  box-shadow: 0 4px 12px rgba(24, 144, 255, 0.3);
+}
+
+.export-btn:hover {
+  background: linear-gradient(135deg, #40a9ff 0%, #1890ff 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(24, 144, 255, 0.4);
+}
+
+.import-btn {
+  background: linear-gradient(135deg, #52c41a 0%, #389e0d 100%);
+  border: none;
+  color: white;
+  box-shadow: 0 4px 12px rgba(82, 196, 26, 0.3);
+}
+
+.import-btn:hover {
+  background: linear-gradient(135deg, #73d13d 0%, #52c41a 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(82, 196, 26, 0.4);
+  color: white;
+}
+
 .danger-card {
   display: flex;
   align-items: flex-start;
@@ -798,6 +1029,10 @@ onMounted(() => {
 
   .provider-radio {
     flex-direction: column;
+  }
+
+  .migration-zone {
+    grid-template-columns: 1fr;
   }
 
   .danger-card {
