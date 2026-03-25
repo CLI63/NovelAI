@@ -1,58 +1,110 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useAppStore } from '../stores/app'
+import { useAppStore } from '@/stores/app'
+import { useAI } from '@/composables/useAI'
 import { message, Modal } from 'ant-design-vue'
-import db from '../utils/db'
+import db from '@/utils/db'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 const appStore = useAppStore()
+const { testConnection, loading: aiLoading } = useAI()
 
 const form = ref({
   aiProvider: 'kimi',
   kimiApiKey: '',
   qianwenApiKey: '',
+  deepseekApiKey: '',
+  doubaoApiKey: '',
   kimiModel: 'kimi-k2-turbo-preview',
   qianwenModel: 'qwen3-max',
+  deepseekModel: 'deepseek-chat',
+  doubaoModel: 'doubao-pro-32k-chat',
   timeout: 180000,
-})
-
-// 当前模型
-const currentModel = computed({
-  get: () => (form.value.aiProvider === 'kimi' ? form.value.kimiModel : form.value.qianwenModel),
-  set: (val) => {
-    if (form.value.aiProvider === 'kimi') {
-      form.value.kimiModel = val
-    } else {
-      form.value.qianwenModel = val
-    }
-  },
 })
 
 const loading = ref(false)
 const activeTab = ref('api')
 
+// 提供商配置
+const providerConfig = {
+  kimi: {
+    name: 'Kimi',
+    icon: '🌙',
+    company: '月之暗面',
+    apiKeyLabel: 'Kimi API Key',
+    modelPlaceholder: '例如：kimi-k2-turbo-preview',
+    modelHint: 'Kimi模型名称，默认：kimi-k2-turbo-preview',
+    platformUrl: 'https://platform.moonshot.cn/',
+    platformText: '访问 Kimi 平台获取 API Key',
+  },
+  qianwen: {
+    name: '千问',
+    icon: '☁️',
+    company: '阿里云',
+    apiKeyLabel: '千问 API Key',
+    modelPlaceholder: '例如：qwen3-max',
+    modelHint: '千问模型名称，默认：qwen3-max',
+    platformUrl: 'https://dashscope.aliyuncs.com/',
+    platformText: '访问千问平台获取 API Key',
+  },
+  deepseek: {
+    name: 'DeepSeek',
+    icon: '🤖',
+    company: '深度求索',
+    apiKeyLabel: 'DeepSeek API Key',
+    modelPlaceholder: '例如：deepseek-chat',
+    modelHint: 'DeepSeek模型名称，默认：deepseek-chat，也支持：deepseek-reasoner',
+    platformUrl: 'https://platform.deepseek.com/',
+    platformText: '访问 DeepSeek 平台获取 API Key',
+  },
+  doubao: {
+    name: '豆包',
+    icon: '🫛',
+    company: '字节跳动',
+    apiKeyLabel: '豆包 API Key',
+    modelPlaceholder: '例如：doubao-pro-32k-chat',
+    modelHint: '豆包模型名称，默认：doubao-pro-32k-chat',
+    platformUrl: 'https://console.volcengine.com/ark',
+    platformText: '访问火山引擎控制台获取 API Key',
+  },
+}
+
+// 当前提供商配置
+const currentProviderConfig = computed(() => providerConfig[form.value.aiProvider] || providerConfig.kimi)
+
+// 当前API Key
 const currentApiKey = computed({
-  get: () => (form.value.aiProvider === 'kimi' ? form.value.kimiApiKey : form.value.qianwenApiKey),
+  get: () => {
+    const provider = form.value.aiProvider
+    return form.value[`${provider}ApiKey`] || ''
+  },
   set: (val) => {
-    if (form.value.aiProvider === 'kimi') {
-      form.value.kimiApiKey = val
-    } else {
-      form.value.qianwenApiKey = val
-    }
+    const provider = form.value.aiProvider
+    form.value[`${provider}ApiKey`] = val
   },
 })
 
+// 当前模型
+const currentModel = computed({
+  get: () => {
+    const provider = form.value.aiProvider
+    return form.value[`${provider}Model`] || ''
+  },
+  set: (val) => {
+    const provider = form.value.aiProvider
+    form.value[`${provider}Model`] = val
+  },
+})
+
+// 加载设置
 const loadSettings = () => {
   form.value = { ...appStore.settings }
 }
 
+// 保存设置
 const handleSave = () => {
-  if (form.value.aiProvider === 'kimi' && !form.value.kimiApiKey) {
-    message.warning('请输入Kimi API Key')
-    return
-  }
-
-  if (form.value.aiProvider === 'qianwen' && !form.value.qianwenApiKey) {
-    message.warning('请输入千问API Key')
+  if (!currentApiKey.value) {
+    message.warning(`请输入${currentProviderConfig.value.name} API Key`)
     return
   }
 
@@ -67,24 +119,21 @@ const handleSave = () => {
   }
 }
 
+// 测试连接
 const handleTest = async () => {
-  const apiKey = form.value.aiProvider === 'kimi' ? form.value.kimiApiKey : form.value.qianwenApiKey
-
-  if (!apiKey) {
+  if (!currentApiKey.value) {
     message.warning('请先输入API Key')
     return
   }
 
-  const model = form.value.aiProvider === 'kimi' ? form.value.kimiModel : form.value.qianwenModel
-
   loading.value = true
   try {
-    const { callAI } = await import('../utils/api')
+    const { callAI } = await import('@/utils/api')
     const response = await callAI(
       [{ role: 'user', content: '你好，请回复"测试成功"' }],
       form.value.aiProvider,
-      apiKey,
-      model,
+      currentApiKey.value,
+      currentModel.value
     )
     if (response.includes('测试成功')) {
       message.success('API连接测试成功！')
@@ -98,6 +147,7 @@ const handleTest = async () => {
   }
 }
 
+// 清除数据
 const handleClearData = () => {
   Modal.confirm({
     title: '⚠️ 危险操作确认',
@@ -114,7 +164,7 @@ const handleClearData = () => {
   })
 }
 
-// 导出数据库
+// 导出数据
 const handleExportData = async () => {
   loading.value = true
   try {
@@ -125,11 +175,7 @@ const handleExportData = async () => {
     const exportData = {
       version: '1.0',
       exportTime: new Date().toISOString(),
-      data: {
-        novels,
-        chapters,
-        settings: settings ? JSON.parse(settings) : null
-      }
+      data: { novels, chapters, settings: settings ? JSON.parse(settings) : null },
     }
 
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
@@ -150,7 +196,7 @@ const handleExportData = async () => {
   }
 }
 
-// 导入数据库
+// 导入数据
 const importInputRef = ref(null)
 
 const triggerImport = () => {
@@ -161,7 +207,6 @@ const handleImportData = async (event) => {
   const file = event.target.files?.[0]
   if (!file) return
 
-  // 重置 input，允许重复选择同一文件
   event.target.value = ''
 
   loading.value = true
@@ -169,14 +214,12 @@ const handleImportData = async (event) => {
     const text = await file.text()
     const importData = JSON.parse(text)
 
-    // 验证数据格式
     if (!importData.version || !importData.data) {
       throw new Error('无效的备份文件格式')
     }
 
     const { novels = [], chapters = [], settings = null } = importData.data
 
-    // 确认导入
     Modal.confirm({
       title: '📦 导入数据确认',
       content: `即将导入 ${novels.length} 部小说和 ${chapters.length} 个章节。现有数据将被覆盖，是否继续？`,
@@ -185,19 +228,12 @@ const handleImportData = async (event) => {
       centered: true,
       onOk: async () => {
         try {
-          // 清空现有数据
           await db.novels.clear()
           await db.chapters.clear()
 
-          // 导入新数据（使用 bulkPut 保留原始 ID）
-          if (novels.length > 0) {
-            await db.novels.bulkPut(novels)
-          }
-          if (chapters.length > 0) {
-            await db.chapters.bulkPut(chapters)
-          }
+          if (novels.length > 0) await db.novels.bulkPut(novels)
+          if (chapters.length > 0) await db.chapters.bulkPut(chapters)
 
-          // 导入设置
           if (settings) {
             localStorage.setItem('novelAISettings', JSON.stringify(settings))
             loadSettings()
@@ -207,7 +243,7 @@ const handleImportData = async (event) => {
         } catch (err) {
           message.error('导入数据时出错：' + err.message)
         }
-      }
+      },
     })
   } catch (error) {
     message.error('解析文件失败：' + error.message)
@@ -224,285 +260,140 @@ onMounted(() => {
 <template>
   <div class="settings-page">
     <!-- 页面头部 -->
-    <div class="page-header">
-      <div class="header-content">
-        <h1 class="page-title">⚙️ 系统设置</h1>
-        <p class="page-subtitle">配置AI提供商、API密钥和其他系统参数</p>
-      </div>
-    </div>
+    <PageHeader
+      title="系统设置"
+      subtitle="配置AI提供商、API密钥和其他系统参数"
+      icon="⚙️"
+    />
 
     <!-- 设置内容 -->
     <a-card :bordered="false" class="settings-card">
-      <a-tabs v-model:activeKey="activeTab" class="settings-tabs">
+      <a-tabs v-model:activeKey="activeTab">
         <!-- API设置 -->
         <a-tab-pane key="api" tab="🔑 API设置">
-          <div class="tab-content">
-            <div class="section-header">
-              <h3 class="section-title">AI 提供商配置</h3>
-              <p class="section-desc">选择您偏好的AI服务提供商并配置API密钥</p>
-            </div>
-
-            <a-form layout="vertical" class="settings-form">
-              <a-form-item label="AI提供商" class="form-item">
-                <a-radio-group v-model:value="form.aiProvider" class="provider-radio">
-                  <a-radio-button value="kimi" class="provider-option">
-                    <span class="provider-icon">🌙</span>
-                    <div class="provider-info">
-                      <span class="provider-name">Kimi</span>
-                      <span class="provider-desc">月之暗面</span>
-                    </div>
-                  </a-radio-button>
-                  <a-radio-button value="qianwen" class="provider-option">
-                    <span class="provider-icon">☁️</span>
-                    <div class="provider-info">
-                      <span class="provider-name">千问</span>
-                      <span class="provider-desc">阿里云</span>
-                    </div>
-                  </a-radio-button>
-                </a-radio-group>
-              </a-form-item>
-
-              <a-form-item
-                :label="form.aiProvider === 'kimi' ? 'Kimi API Key' : '千问 API Key'"
-                class="form-item"
-              >
-                <a-input-password
-                  v-model:value="currentApiKey"
-                  placeholder="请输入API Key"
-                  size="large"
-                  class="api-key-input"
-                />
-                <div class="input-hint">
-                  <a
-                    :href="
-                      form.aiProvider === 'kimi'
-                        ? 'https://platform.moonshot.cn/'
-                        : 'https://dashscope.aliyuncs.com/'
-                    "
-                    target="_blank"
-                    class="hint-link"
-                  >
-                    <span class="link-icon">🔗</span>
-                    {{
-                      form.aiProvider === 'kimi'
-                        ? '访问 Kimi 平台获取 API Key'
-                        : '访问千问平台获取 API Key'
-                    }}
-                  </a>
-                </div>
-              </a-form-item>
-
-              <a-form-item label="模型名称" class="form-item">
-                <a-input
-                  v-model:value="currentModel"
-                  size="large"
-                  class="model-input"
-                  :placeholder="
-                    form.aiProvider === 'kimi' ? '例如：kimi-k2-turbo-preview' : '例如：qwen3-max'
-                  "
-                />
-                <div class="input-hint">
-                  {{
-                    form.aiProvider === 'kimi'
-                      ? 'Kimi模型名称，默认：kimi-k2-turbo-preview'
-                      : '千问模型名称，默认：qwen3-max'
-                  }}
-                </div>
-              </a-form-item>
-
-              <a-form-item label="请求超时时间" class="form-item">
-                <a-input-number
-                  v-model:value="form.timeout"
-                  :min="10000"
-                  :max="300000"
-                  :step="10000"
-                  size="large"
-                  class="timeout-input"
-                >
-                  <template #addonAfter>毫秒</template>
-                </a-input-number>
-                <div class="input-hint">建议设置在 30-120 秒之间，根据网络情况调整</div>
-              </a-form-item>
-
-              <div class="form-actions">
-                <a-space size="large">
-                  <a-button
-                    type="primary"
-                    @click="handleSave"
-                    :loading="loading"
-                    size="large"
-                    class="save-btn"
-                  >
-                    <template #icon>
-                      <span class="btn-icon">💾</span>
-                    </template>
-                    保存设置
-                  </a-button>
-                  <a-button @click="handleTest" :loading="loading" size="large" class="test-btn">
-                    <template #icon>
-                      <span class="btn-icon">🔌</span>
-                    </template>
-                    测试连接
-                  </a-button>
-                </a-space>
-              </div>
-            </a-form>
-
-            <!-- API说明卡片 -->
-            <a-alert message="📋 API Key 使用说明" type="info" show-icon class="info-alert">
-              <template #description>
-                <ul class="info-list">
-                  <li>
-                    <strong>Kimi API：</strong>访问
-                    <a href="https://platform.moonshot.cn/" target="_blank" class="alert-link"
-                      >https://platform.moonshot.cn/</a
-                    >
-                    注册账号并创建API Key
-                  </li>
-                  <li>
-                    <strong>千问API：</strong>访问
-                    <a href="https://dashscope.aliyuncs.com/" target="_blank" class="alert-link"
-                      >https://dashscope.aliyuncs.com/</a
-                    >
-                    开通服务并获取API Key
-                  </li>
-                  <li>
-                    <strong>安全提示：</strong>API
-                    Key仅保存在本地浏览器中，不会上传到任何服务器，请放心使用
-                  </li>
-                </ul>
-              </template>
-            </a-alert>
+          <div class="section-header">
+            <h3 class="section-title">AI 提供商配置</h3>
+            <p class="section-desc">选择您偏好的AI服务提供商并配置API密钥</p>
           </div>
+
+          <a-form layout="vertical" class="settings-form">
+            <!-- 提供商选择 -->
+            <a-form-item label="AI提供商">
+              <div class="provider-grid">
+                <div
+                  v-for="(config, key) in providerConfig"
+                  :key="key"
+                  class="provider-card"
+                  :class="{ active: form.aiProvider === key }"
+                  @click="form.aiProvider = key"
+                >
+                  <div v-if="form.aiProvider === key" class="provider-check">✓</div>
+                  <span class="provider-icon">{{ config.icon }}</span>
+                  <div class="provider-info">
+                    <span class="provider-name">{{ config.name }}</span>
+                    <span class="provider-desc">{{ config.company }}</span>
+                  </div>
+                </div>
+              </div>
+            </a-form-item>
+
+            <!-- API Key -->
+            <a-form-item :label="currentProviderConfig.apiKeyLabel">
+              <a-input-password
+                v-model:value="currentApiKey"
+                placeholder="请输入API Key"
+                size="large"
+              />
+              <div class="input-hint">
+                <a :href="currentProviderConfig.platformUrl" target="_blank" class="hint-link">
+                  <span class="link-icon">🔗</span>
+                  {{ currentProviderConfig.platformText }}
+                </a>
+              </div>
+            </a-form-item>
+
+            <!-- 模型名称 -->
+            <a-form-item label="模型名称">
+              <a-input
+                v-model:value="currentModel"
+                size="large"
+                :placeholder="currentProviderConfig.modelPlaceholder"
+              />
+              <div class="input-hint">{{ currentProviderConfig.modelHint }}</div>
+            </a-form-item>
+
+            <!-- 超时时间 -->
+            <a-form-item label="请求超时时间">
+              <a-input-number
+                v-model:value="form.timeout"
+                :min="10000"
+                :max="300000"
+                :step="10000"
+                size="large"
+                style="width: 200px"
+              >
+                <template #addonAfter>毫秒</template>
+              </a-input-number>
+              <div class="input-hint">建议设置在 30-120 秒之间</div>
+            </a-form-item>
+
+            <!-- 操作按钮 -->
+            <div class="form-actions">
+              <a-space size="large">
+                <a-button type="primary" :loading="loading" size="large" @click="handleSave">
+                  保存设置
+                </a-button>
+                <a-button :loading="loading" size="large" @click="handleTest">
+                  测试连接
+                </a-button>
+              </a-space>
+            </div>
+          </a-form>
         </a-tab-pane>
 
         <!-- 数据管理 -->
         <a-tab-pane key="data" tab="💾 数据管理">
-          <div class="tab-content">
-            <!-- 数据迁移区域 -->
-            <div class="section-header">
-              <h3 class="section-title">📦 数据迁移</h3>
-              <p class="section-desc">导出或导入数据，方便更换电脑后的数据迁移</p>
-            </div>
-
-            <div class="migration-zone">
-              <div class="migration-card export-card">
-                <div class="migration-icon">📤</div>
-                <div class="migration-content">
-                  <h4 class="migration-title">导出数据</h4>
-                  <p class="migration-desc">将所有小说、章节和设置导出为 JSON 文件，用于备份或迁移到其他设备</p>
-                </div>
-                <a-button type="primary" size="large" @click="handleExportData" :loading="loading" class="migration-btn export-btn">
-                  <template #icon>
-                    <span class="btn-icon">📤</span>
-                  </template>
-                  导出数据
-                </a-button>
-              </div>
-
-              <div class="migration-card import-card">
-                <div class="migration-icon">📥</div>
-                <div class="migration-content">
-                  <h4 class="migration-title">导入数据</h4>
-                  <p class="migration-desc">从备份文件恢复数据，将覆盖现有数据，请谨慎操作</p>
-                </div>
-                <a-button size="large" @click="triggerImport" :loading="loading" class="migration-btn import-btn">
-                  <template #icon>
-                    <span class="btn-icon">📥</span>
-                  </template>
-                  导入数据
-                </a-button>
-                <input
-                  ref="importInputRef"
-                  type="file"
-                  accept=".json"
-                  style="display: none"
-                  @change="handleImportData"
-                />
-              </div>
-            </div>
-
-            <!-- 危险操作区域 -->
-            <div class="section-header warning">
-              <h3 class="section-title">⚠️ 危险操作区域</h3>
-              <p class="section-desc">以下操作可能会删除您的数据，请谨慎操作</p>
-            </div>
-
-            <div class="danger-zone">
-              <div class="danger-card">
-                <div class="danger-icon">🗑️</div>
-                <div class="danger-content">
-                  <h4 class="danger-title">清除所有数据</h4>
-                  <p class="danger-desc">此操作将永久删除所有小说、章节和设置数据，包括：</p>
-                  <ul class="danger-list">
-                    <li>所有已创建的小说和章节内容</li>
-                    <li>所有API配置和系统设置</li>
-                    <li>此操作不可撤销，请提前备份重要数据</li>
-                  </ul>
-                </div>
-                <a-button danger size="large" @click="handleClearData" class="danger-btn">
-                  <template #icon>
-                    <span class="btn-icon">⚠️</span>
-                  </template>
-                  清除所有数据
-                </a-button>
-              </div>
-            </div>
-
-            <a-alert message="💡 数据备份建议" type="warning" show-icon class="warning-alert">
-              <template #description>
-                <p>
-                  建议定期使用"导出数据"功能备份所有数据，在更换电脑或浏览器时可通过"导入数据"恢复。
-                </p>
-              </template>
-            </a-alert>
+          <div class="section-header">
+            <h3 class="section-title">数据备份与恢复</h3>
+            <p class="section-desc">导出或导入您的小说数据</p>
           </div>
-        </a-tab-pane>
 
-        <!-- 关于 -->
-        <a-tab-pane key="about" tab="ℹ️ 关于">
-          <div class="tab-content about-content">
-            <div class="about-logo">
-              <span class="logo-icon">📚</span>
-              <h2 class="logo-title">Novel AI</h2>
-              <p class="logo-subtitle">AI 辅助小说创作工具</p>
+          <div class="data-actions">
+            <div class="action-item">
+              <div class="action-info">
+                <h4>📤 导出数据</h4>
+                <p>将所有小说、章节和设置导出为JSON文件</p>
+              </div>
+              <a-button type="primary" :loading="loading" @click="handleExportData">
+                导出备份
+              </a-button>
             </div>
 
-            <div class="about-info">
-              <div class="info-item">
-                <span class="info-label">版本</span>
-                <span class="info-value">v1.0.0</span>
+            <div class="action-item">
+              <div class="action-info">
+                <h4>📥 导入数据</h4>
+                <p>从备份文件恢复数据（将覆盖现有数据）</p>
               </div>
-              <div class="info-item">
-                <span class="info-label">技术栈</span>
-                <span class="info-value">Vue 3 + Ant Design Vue + IndexedDB</span>
-              </div>
-              <div class="info-item">
-                <span class="info-label">数据存储</span>
-                <span class="info-value">本地浏览器（IndexedDB）</span>
-              </div>
+              <a-button :loading="loading" @click="triggerImport">
+                选择文件
+              </a-button>
+              <input
+                ref="importInputRef"
+                type="file"
+                accept=".json"
+                style="display: none"
+                @change="handleImportData"
+              />
             </div>
 
-            <div class="about-features">
-              <h4 class="features-title">✨ 主要功能</h4>
-              <div class="features-grid">
-                <div class="feature-item">
-                  <span class="feature-icon">🤖</span>
-                  <span class="feature-text">AI智能生成小说概览</span>
-                </div>
-                <div class="feature-item">
-                  <span class="feature-icon">✍️</span>
-                  <span class="feature-text">自动创作小说章节</span>
-                </div>
-                <div class="feature-item">
-                  <span class="feature-icon">📖</span>
-                  <span class="feature-text">章节管理与编辑</span>
-                </div>
-                <div class="feature-item">
-                  <span class="feature-icon">💾</span>
-                  <span class="feature-text">本地数据存储</span>
-                </div>
+            <div class="action-item danger">
+              <div class="action-info">
+                <h4>🗑️ 清除数据</h4>
+                <p>删除所有小说、章节和设置（不可恢复）</p>
               </div>
+              <a-button danger :loading="loading" @click="handleClearData">
+                清除所有数据
+              </a-button>
             </div>
           </div>
         </a-tab-pane>
@@ -513,139 +404,77 @@ onMounted(() => {
 
 <style scoped>
 .settings-page {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
 }
 
-/* 页面头部 */
-.page-header {
-  margin-bottom: 32px;
-  padding: 32px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-radius: 16px;
-  box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
-  text-align: center;
-}
-
-.header-content {
-  color: white;
-}
-
-.page-title {
-  font-size: 28px;
-  font-weight: 700;
-  margin: 0 0 8px 0;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.page-subtitle {
-  font-size: 15px;
-  opacity: 0.9;
-  margin: 0;
-}
-
-/* 设置卡片 */
 .settings-card {
-  background: white;
-  border-radius: 16px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
-  overflow: hidden;
-}
-
-.settings-tabs :deep(.ant-tabs-nav) {
-  padding: 0 24px;
-  margin-bottom: 0;
-  background: #fafafa;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.settings-tabs :deep(.ant-tabs-tab) {
-  padding: 16px 24px;
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.settings-tabs :deep(.ant-tabs-tab-active) {
-  font-weight: 600;
-}
-
-.settings-tabs :deep(.ant-tabs-content) {
-  padding: 0;
-}
-
-/* 标签内容 */
-.tab-content {
-  padding: 32px;
+  background: var(--bg-primary);
 }
 
 .section-header {
-  margin-bottom: 28px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.section-header.warning {
-  border-bottom-color: #ffd591;
+  margin-bottom: var(--spacing-lg);
 }
 
 .section-title {
-  font-size: 20px;
+  margin: 0 0 var(--spacing-xs) 0;
+  font-size: 18px;
   font-weight: 600;
-  color: #1a1a1a;
-  margin: 0 0 8px 0;
-}
-
-.section-header.warning .section-title {
-  color: #d48806;
+  color: var(--text-primary);
 }
 
 .section-desc {
-  font-size: 14px;
-  color: #999;
   margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
 }
 
-/* 表单样式 */
 .settings-form {
   max-width: 600px;
 }
 
-.form-item {
-  margin-bottom: 28px;
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--spacing-md);
 }
 
-.form-item :deep(.ant-form-item-label) {
-  font-weight: 600;
-  font-size: 15px;
-  color: #333;
-  padding-bottom: 10px;
-}
-
-/* 提供商选择 */
-.provider-radio {
-  display: flex;
-  gap: 16px;
-}
-
-.provider-option {
-  height: auto;
-  padding: 20px 28px;
-  border-radius: 12px;
+.provider-card {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 16px;
-  transition: all 0.3s ease;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md);
+  background: var(--bg-secondary);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-fast);
 }
 
-.provider-option:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+.provider-card:hover {
+  border-color: var(--primary-color);
 }
 
-.provider-option :deep(.ant-radio-button-checked) {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-color: #667eea;
+.provider-card.active {
+  border-color: var(--primary-color);
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+}
+
+.provider-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  background: var(--primary-gradient);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
 }
 
 .provider-icon {
@@ -655,393 +484,72 @@ onMounted(() => {
 .provider-info {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  gap: 2px;
 }
 
 .provider-name {
-  font-size: 17px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .provider-desc {
-  font-size: 13px;
-  color: #999;
-}
-
-/* 输入框样式 */
-.api-key-input,
-.timeout-input,
-.model-input :deep(input) {
-  border-radius: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .input-hint {
-  margin-top: 8px;
-  font-size: 13px;
-  color: #999;
+  margin-top: var(--spacing-xs);
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .hint-link {
-  color: #667eea;
+  color: var(--primary-color);
   text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  transition: all 0.3s ease;
 }
 
 .hint-link:hover {
-  color: #764ba2;
-}
-
-.link-icon {
-  font-size: 12px;
-}
-
-/* 按钮样式 */
-.form-actions {
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid #f0f0f0;
-}
-
-.save-btn {
-  height: 48px;
-  padding: 0 32px;
-  border-radius: 10px;
-  font-size: 16px;
-  font-weight: 600;
-  background: linear-gradient(135deg, #52c41a 0%, #389e0d 100%);
-  border: none;
-  box-shadow: 0 4px 16px rgba(82, 196, 26, 0.3);
-  transition: all 0.3s ease;
-}
-
-.save-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(82, 196, 26, 0.4);
-}
-
-.test-btn {
-  height: 48px;
-  padding: 0 28px;
-  border-radius: 10px;
-  font-size: 16px;
-  font-weight: 500;
-}
-
-.btn-icon {
-  margin-right: 6px;
-}
-
-/* 信息提示 */
-.info-alert {
-  margin-top: 32px;
-  border-radius: 12px;
-}
-
-.info-alert :deep(.ant-alert-message) {
-  font-weight: 600;
-  font-size: 15px;
-}
-
-.info-list {
-  margin: 12px 0;
-  padding-left: 20px;
-}
-
-.info-list li {
-  margin-bottom: 8px;
-  line-height: 1.6;
-}
-
-.alert-link {
-  color: #667eea;
-  text-decoration: none;
-}
-
-.alert-link:hover {
   text-decoration: underline;
 }
 
-/* 危险区域 */
-.danger-zone {
-  margin-bottom: 24px;
+.link-icon {
+  margin-right: 4px;
 }
 
-/* 数据迁移区域 */
-.migration-zone {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 20px;
-  margin-bottom: 32px;
+.form-actions {
+  margin-top: var(--spacing-xl);
+  padding-top: var(--spacing-lg);
+  border-top: 1px solid var(--border-color);
 }
 
-.migration-card {
+.data-actions {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 16px;
-  padding: 28px 24px;
-  border-radius: 12px;
-  text-align: center;
+  gap: var(--spacing-md);
+  max-width: 600px;
 }
 
-.export-card {
-  background: linear-gradient(135deg, #e6f7ff 0%, #f0f5ff 100%);
-  border: 1px solid #adc6ff;
-}
-
-.import-card {
-  background: linear-gradient(135deg, #f6ffed 0%, #f4fffb 100%);
-  border: 1px solid #b7eb8f;
-}
-
-.migration-icon {
-  font-size: 40px;
-}
-
-.migration-content {
-  flex: 1;
-}
-
-.migration-title {
-  font-size: 17px;
-  font-weight: 600;
-  color: #1a1a1a;
-  margin: 0 0 8px 0;
-}
-
-.migration-desc {
-  font-size: 13px;
-  color: #666;
-  margin: 0;
-  line-height: 1.6;
-}
-
-.migration-btn {
-  height: 44px;
-  padding: 0 24px;
-  border-radius: 10px;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.export-btn {
-  background: linear-gradient(135deg, #1890ff 0%, #096dd9 100%);
-  border: none;
-  box-shadow: 0 4px 12px rgba(24, 144, 255, 0.3);
-}
-
-.export-btn:hover {
-  background: linear-gradient(135deg, #40a9ff 0%, #1890ff 100%);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(24, 144, 255, 0.4);
-}
-
-.import-btn {
-  background: linear-gradient(135deg, #52c41a 0%, #389e0d 100%);
-  border: none;
-  color: white;
-  box-shadow: 0 4px 12px rgba(82, 196, 26, 0.3);
-}
-
-.import-btn:hover {
-  background: linear-gradient(135deg, #73d13d 0%, #52c41a 100%);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(82, 196, 26, 0.4);
-  color: white;
-}
-
-.danger-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 20px;
-  padding: 28px;
-  background: linear-gradient(135deg, #fff2f0 0%, #fff5f5 100%);
-  border: 1px solid #ffccc7;
-  border-radius: 12px;
-}
-
-.danger-icon {
-  font-size: 40px;
-  flex-shrink: 0;
-}
-
-.danger-content {
-  flex: 1;
-}
-
-.danger-title {
-  font-size: 17px;
-  font-weight: 600;
-  color: #cf1322;
-  margin: 0 0 8px 0;
-}
-
-.danger-desc {
-  font-size: 14px;
-  color: #666;
-  margin: 0 0 12px 0;
-}
-
-.danger-list {
-  margin: 0;
-  padding-left: 18px;
-  font-size: 13px;
-  color: #999;
-}
-
-.danger-list li {
-  margin-bottom: 4px;
-}
-
-.danger-btn {
-  height: 48px;
-  padding: 0 28px;
-  border-radius: 10px;
-  font-size: 15px;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.warning-alert {
-  border-radius: 12px;
-}
-
-/* 关于页面 */
-.about-content {
-  text-align: center;
-}
-
-.about-logo {
-  margin-bottom: 40px;
-}
-
-.logo-icon {
-  font-size: 64px;
-  display: block;
-  margin-bottom: 16px;
-}
-
-.logo-title {
-  font-size: 28px;
-  font-weight: 700;
-  color: #1a1a1a;
-  margin: 0 0 8px 0;
-}
-
-.logo-subtitle {
-  font-size: 15px;
-  color: #999;
-  margin: 0;
-}
-
-.about-info {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  max-width: 400px;
-  margin: 0 auto 40px;
-  padding: 24px;
-  background: #fafafa;
-  border-radius: 12px;
-}
-
-.info-item {
+.action-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 14px;
+  padding: var(--spacing-lg);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
 }
 
-.info-label {
-  color: #999;
-  font-weight: 500;
+.action-item.danger {
+  background: rgba(239, 68, 68, 0.1);
 }
 
-.info-value {
-  color: #333;
-  font-weight: 500;
+.action-info h4 {
+  margin: 0 0 var(--spacing-xs) 0;
+  color: var(--text-primary);
 }
 
-.about-features {
-  margin-top: 40px;
-}
-
-.features-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #1a1a1a;
-  margin: 0 0 24px 0;
-}
-
-.features-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
-  max-width: 500px;
-  margin: 0 auto;
-}
-
-.feature-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 20px;
-  background: linear-gradient(135deg, #f8f9ff 0%, #f0f2ff 100%);
-  border-radius: 10px;
-  transition: all 0.3s ease;
-}
-
-.feature-item:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
-}
-
-.feature-icon {
-  font-size: 24px;
-}
-
-.feature-text {
-  font-size: 14px;
-  color: #333;
-  font-weight: 500;
-}
-
-/* 响应式 */
-@media (max-width: 768px) {
-  .settings-page {
-    padding: 16px;
-  }
-
-  .page-header {
-    padding: 24px;
-  }
-
-  .page-title {
-    font-size: 24px;
-  }
-
-  .tab-content {
-    padding: 20px;
-  }
-
-  .provider-radio {
-    flex-direction: column;
-  }
-
-  .migration-zone {
-    grid-template-columns: 1fr;
-  }
-
-  .danger-card {
-    flex-direction: column;
-    text-align: center;
-  }
-
-  .features-grid {
-    grid-template-columns: 1fr;
-  }
+.action-info p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 </style>

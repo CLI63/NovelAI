@@ -1,82 +1,14 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { novelDao, chapterDao } from '../utils/dao'
-import { message, Modal } from 'ant-design-vue'
+import { useNovel } from '@/composables/useNovel'
+import PageHeader from '@/components/common/PageHeader.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 
 const router = useRouter()
-const novels = ref([])
-const loading = ref(false)
+const { novels, loading, loadNovels, deleteNovel, goToDetail, goToEdit, goToCreate } = useNovel()
 
-/**
- * 加载小说列表数据
- */
-const loadNovels = async () => {
-  loading.value = true
-  try {
-    const novelList = await novelDao.getAll()
-    for (const novel of novelList) {
-      const chapters = await chapterDao.getByNovelId(novel.id)
-      novel.chapterCount = chapters.length
-      novel.totalWords = chapters.reduce((sum, ch) => sum + (ch.wordCount || 0), 0)
-    }
-    novels.value = novelList
-  } catch (error) {
-    message.error('加载小说列表失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-/**
- * 跳转到创建小说页面
- */
-const handleCreate = () => {
-  router.push('/novel/create')
-}
-
-/**
- * 查看小说详情
- * @param {number} id - 小说ID
- */
-const handleView = (id) => {
-  router.push(`/novel/${id}`)
-}
-
-/**
- * 编辑小说
- * @param {number} id - 小说ID
- */
-const handleEdit = (id) => {
-  router.push(`/novel/${id}/edit`)
-}
-
-/**
- * 删除小说
- * @param {number} id - 小说ID
- */
-const handleDelete = (id) => {
-  Modal.confirm({
-    title: '确认删除',
-    content: '确定要删除这部小说及其所有章节吗？删除后将无法恢复。',
-    okText: '确定',
-    cancelText: '取消',
-    okButtonProps: { danger: true },
-    onOk: async () => {
-      try {
-        await novelDao.delete(id)
-        message.success('删除成功')
-        loadNovels()
-      } catch (error) {
-        message.error('删除失败')
-      }
-    },
-  })
-}
-
-/**
- * 表格列配置
- */
+// 表格列配置
 const columns = [
   {
     title: '书名',
@@ -135,6 +67,32 @@ const columns = [
   },
 ]
 
+// 格式化日期
+const formatDate = (dateStr) => {
+  if (!dateStr) return '-'
+  return new Date(dateStr).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+// 格式化字数
+const formatWordCount = (count) => {
+  if (!count) return '0'
+  if (count >= 10000) {
+    return (count / 10000).toFixed(1) + '万'
+  }
+  return count.toLocaleString()
+}
+
+// 处理删除
+const handleDelete = (id) => {
+  deleteNovel(id, () => loadNovels())
+}
+
 onMounted(() => {
   loadNovels()
 })
@@ -142,43 +100,34 @@ onMounted(() => {
 
 <template>
   <div class="novel-list-page">
-    <!-- 页面标题卡片 -->
-    <a-card :bordered="false" class="page-header-card">
-      <div class="page-header">
-        <div class="header-left">
-          <div class="header-icon">📚</div>
-          <div class="header-info">
-            <h1 class="page-title">小说列表</h1>
-            <p class="page-subtitle">管理和查看您的AI生成小说</p>
-          </div>
-        </div>
-        <div class="header-stats">
+    <!-- 页面标题 -->
+    <a-card :bordered="false" class="header-card">
+      <PageHeader title="小说列表" subtitle="管理和查看您的AI生成小说" icon="📚">
+        <template #actions>
           <a-tag color="processing" class="stats-tag">
             <span class="stats-number">{{ novels.length }}</span>
             <span class="stats-label">部小说</span>
           </a-tag>
-        </div>
-        <a-button type="primary" size="large" class="create-btn" @click="handleCreate">
-          <template #icon>
-            <span class="btn-icon">+</span>
-          </template>
-          创建新小说
-        </a-button>
-      </div>
+          <a-button type="primary" size="large" @click="goToCreate">
+            <template #icon>
+              <span class="btn-icon">+</span>
+            </template>
+            创建新小说
+          </a-button>
+        </template>
+      </PageHeader>
     </a-card>
 
-    <!-- 小说列表卡片 -->
+    <!-- 小说列表 -->
     <a-card :bordered="false" class="list-card">
       <a-spin :spinning="loading" size="large">
         <!-- 空状态 -->
-        <a-empty
+        <EmptyState
           v-if="!loading && novels.length === 0"
-          class="empty-state"
-          image="https://gw.alipayobjects.com/zos/antfincdn/ZHrcdLPrvN/empty.svg"
           description="暂无小说，快去创建吧！"
-        >
-          <a-button type="primary" @click="handleCreate">立即创建</a-button>
-        </a-empty>
+          button-text="立即创建"
+          @action="goToCreate"
+        />
 
         <!-- 数据表格 -->
         <a-table
@@ -198,23 +147,19 @@ onMounted(() => {
           <template #bodyCell="{ column, record }">
             <!-- 书名列 -->
             <template v-if="column.key === 'title'">
-              <a class="novel-title" @click="handleView(record.id)">
+              <a-button type="link" @click="goToDetail(record.id)">
                 {{ record.title }}
-              </a>
+              </a-button>
             </template>
 
             <!-- 风格列 -->
             <template v-else-if="column.key === 'style'">
               <div class="style-tags">
-                <a-tag
-                  v-for="style in record.style"
-                  :key="style"
-                  :color="
-                    ['blue', 'green', 'purple', 'orange', 'cyan'][record.style.indexOf(style) % 5]
-                  "
-                  class="style-tag"
-                >
+                <a-tag v-for="style in record.style?.slice(0, 2)" :key="style" color="blue">
                   {{ style }}
+                </a-tag>
+                <a-tag v-if="record.style?.length > 2" color="blue">
+                  +{{ record.style.length - 2 }}
                 </a-tag>
               </div>
             </template>
@@ -226,30 +171,29 @@ onMounted(() => {
               </a-tooltip>
             </template>
 
+            <!-- 字数列 -->
+            <template v-else-if="column.key === 'totalWords'">
+              <span class="word-count">{{ formatWordCount(record.totalWords) }}</span>
+            </template>
+
             <!-- 创建时间列 -->
             <template v-else-if="column.key === 'createdAt'">
-              <span class="time-text">{{ new Date(record.createdAt).toLocaleString() }}</span>
+              <span class="create-time">{{ formatDate(record.createdAt) }}</span>
             </template>
 
             <!-- 操作列 -->
             <template v-else-if="column.key === 'action'">
-              <div class="action-btns">
-                <a-button type="link" class="action-btn view-btn" @click="handleView(record.id)">
+              <a-space>
+                <a-button type="link" size="small" @click="goToDetail(record.id)">
                   查看
                 </a-button>
-                <a-button type="link" class="action-btn edit-btn" @click="handleEdit(record.id)">
+                <a-button type="link" size="small" @click="goToEdit(record.id)">
                   编辑
                 </a-button>
-                <a-popconfirm
-                  title="确定要删除这部小说吗？"
-                  ok-text="确定"
-                  cancel-text="取消"
-                  ok-button-props="{ danger: true }"
-                  @confirm="handleDelete(record.id)"
-                >
-                  <a-button type="link" danger class="action-btn delete-btn"> 删除 </a-button>
-                </a-popconfirm>
-              </div>
+                <a-button type="link" size="small" danger @click="handleDelete(record.id)">
+                  删除
+                </a-button>
+              </a-space>
             </template>
           </template>
         </a-table>
@@ -260,222 +204,68 @@ onMounted(() => {
 
 <style scoped>
 .novel-list-page {
-  padding: 8px;
-}
-
-.page-header-card {
-  margin-bottom: 24px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
-}
-
-.page-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
+  flex-direction: column;
+  gap: var(--spacing-lg);
 }
 
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-
-.header-icon {
-  font-size: 48px;
-  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.2));
-}
-
-.header-info {
-  color: #ffffff;
-}
-
-.page-title {
-  font-size: 28px;
-  font-weight: 700;
-  margin: 0 0 8px 0;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.page-subtitle {
-  font-size: 14px;
-  opacity: 0.9;
-  margin: 0;
-  font-weight: 400;
-}
-
-.header-stats {
-  display: flex;
-  align-items: center;
+.header-card {
+  background: var(--bg-primary);
 }
 
 .stats-tag {
-  padding: 8px 20px;
-  font-size: 16px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  color: #ffffff;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
 }
 
 .stats-number {
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 700;
-  margin-right: 4px;
 }
 
 .stats-label {
-  font-size: 14px;
-  opacity: 0.9;
-}
-
-.create-btn {
-  height: 48px;
-  padding: 0 28px;
-  font-size: 16px;
-  font-weight: 600;
-  border-radius: 12px;
-  background: #ffffff;
-  color: #667eea;
-  border: none;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
-  transition: all 0.3s ease;
-}
-
-.create-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
-  background: #ffffff;
-  color: #764ba2;
+  font-size: 12px;
 }
 
 .btn-icon {
-  font-size: 20px;
-  margin-right: 4px;
+  font-size: 16px;
+  font-weight: bold;
 }
 
 .list-card {
-  border-radius: 16px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
-  background: #ffffff;
-  overflow: hidden;
-}
-
-.empty-state {
-  padding: 80px 0;
-}
-
-.novel-table {
-  font-size: 14px;
-}
-
-:deep(.ant-table-wrapper) {
-  overflow-x: auto;
-}
-
-:deep(.ant-table-thead > tr > th) {
-  background: #f8fafc;
-  font-weight: 600;
-  color: #475569;
-  padding: 16px;
-  border-bottom: 2px solid #e2e8f0;
-}
-
-:deep(.ant-table-tbody > tr > td) {
-  padding: 16px;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-:deep(.ant-table-tbody > tr:hover > td) {
-  background: #f8fafc;
-}
-
-.novel-title {
-  font-weight: 600;
-  color: #667eea;
-  font-size: 15px;
-  transition: color 0.3s ease;
-}
-
-.novel-title:hover {
-  color: #764ba2;
+  background: var(--bg-primary);
 }
 
 .style-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-}
-
-.style-tag {
-  border-radius: 6px;
-  font-size: 12px;
-  padding: 2px 10px;
+  gap: 4px;
 }
 
 .description-text {
-  color: #64748b;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  color: var(--text-secondary);
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+  max-width: 230px;
 }
 
-.time-text {
-  color: #94a3b8;
+.word-count {
+  color: var(--primary-color);
+  font-weight: 500;
+}
+
+.create-time {
+  color: var(--text-muted);
   font-size: 13px;
 }
 
-.action-btns {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-}
-
-.action-btn {
-  font-size: 13px;
-  padding: 4px 12px;
-  border-radius: 6px;
-  transition: all 0.3s ease;
-}
-
-.view-btn {
-  color: #667eea;
-}
-
-.view-btn:hover {
-  background: rgba(102, 126, 234, 0.1);
-}
-
-.edit-btn {
-  color: #10b981;
-}
-
-.edit-btn:hover {
-  background: rgba(16, 185, 129, 0.1);
-}
-
-.delete-btn:hover {
-  background: rgba(239, 68, 68, 0.1);
-}
-
-:deep(.ant-pagination) {
-  margin-top: 24px;
-  padding: 16px;
-}
-
-:deep(.ant-pagination-item-active) {
-  border-color: #667eea;
-  background: #667eea;
-}
-
-:deep(.ant-pagination-item-active a) {
-  color: #ffffff;
-}
-
-:deep(.ant-spin-dot-item) {
-  background-color: #667eea;
+.novel-table :deep(.ant-table-thead > tr > th) {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 600;
 }
 </style>

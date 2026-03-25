@@ -8,8 +8,12 @@ export const useAppStore = defineStore('app', () => {
     aiProvider: 'kimi',
     kimiApiKey: '',
     qianwenApiKey: '',
+    deepseekApiKey: '',
+    doubaoApiKey: '',
     kimiModel: 'kimi-k2-turbo-preview',
     qianwenModel: 'qwen3-max',
+    deepseekModel: 'deepseek-chat',
+    doubaoModel: 'doubao-pro-32k-chat',
     timeout: 1200000,
   })
 
@@ -34,9 +38,21 @@ export const useAppStore = defineStore('app', () => {
   }
 
   const getCurrentApiKey = () => {
-    return settings.value.aiProvider === 'kimi'
-      ? settings.value.kimiApiKey
-      : settings.value.qianwenApiKey
+    const provider = settings.value.aiProvider
+    if (provider === 'kimi') return settings.value.kimiApiKey
+    if (provider === 'qianwen') return settings.value.qianwenApiKey
+    if (provider === 'deepseek') return settings.value.deepseekApiKey
+    if (provider === 'doubao') return settings.value.doubaoApiKey
+    return ''
+  }
+
+  const getCurrentModel = () => {
+    const provider = settings.value.aiProvider
+    if (provider === 'kimi') return settings.value.kimiModel || 'kimi-k2-turbo-preview'
+    if (provider === 'qianwen') return settings.value.qianwenModel || 'qwen3-max'
+    if (provider === 'deepseek') return settings.value.deepseekModel || 'deepseek-chat'
+    if (provider === 'doubao') return settings.value.doubaoModel || 'doubao-pro-32k-chat'
+    return ''
   }
 
   return {
@@ -48,5 +64,6 @@ export const useAppStore = defineStore('app', () => {
     updateSettings,
     loadSettings,
     getCurrentApiKey,
+    getCurrentModel,
   }
 })

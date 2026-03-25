@@ -11,19 +11,6 @@ const route = useRoute()
 const collapsed = ref(false)
 const selectedKeys = ref(['/'])
 
-const menuItems = computed(() => [
-  {
-    key: '/',
-    icon: 'book',
-    label: '小说列表',
-  },
-  {
-    key: '/settings',
-    icon: 'setting',
-    label: '设置',
-  },
-])
-
 const handleMenuClick = ({ key }) => {
   router.push(key)
 }
