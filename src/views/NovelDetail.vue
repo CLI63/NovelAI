@@ -10,6 +10,7 @@ import { useGenerationQueue } from '@/composables/useGenerationQueue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import NovelInfo from '@/components/novel/NovelInfo.vue'
 import ChapterList from '@/components/chapter/ChapterList.vue'
+import RelationshipGraph from '@/components/character/RelationshipGraph.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -30,14 +31,14 @@ const {
 
 // 伏笔管理
 const {
-  foreshadowingList,
+  foreshadowings: foreshadowingList,
   loading: foreshadowingLoading,
-  loadForeshadowing,
+  loadForeshadowings: loadForeshadowing,
   createForeshadowing,
   updateForeshadowing,
   deleteForeshadowing,
-  pendingForeshadowing,
-  resolvedForeshadowing
+  pendingForeshadowings: pendingForeshadowing,
+  resolvedForeshadowings: resolvedForeshadowing
 } = useForeshadowing()
 
 // 生成任务队列
@@ -54,6 +55,7 @@ const {
 } = useGenerationQueue()
 
 const activeTab = ref('chapters')
+const characterViewMode = ref('cards') // 'cards' | 'graph'
 
 // 统计信息
 const { totalWordCount, progress } = useNovelStats(novel, chapters)
@@ -129,6 +131,16 @@ const handleDeleteChapter = (chapter) => {
 // 返回列表
 const handleBack = () => {
   router.push('/')
+}
+
+// 开始阅读
+const handleStartReading = () => {
+  router.push(`/reader/${novel.value.id}`)
+}
+
+// 打开大纲编辑器
+const handleOpenOutline = () => {
+  router.push(`/novel/${novel.value.id}/outline`)
 }
 
 // ============ 角色管理方法 ============
@@ -351,8 +363,18 @@ onMounted(() => {
             <a-button @click="goToEdit(novel.id)">
               编辑
             </a-button>
+            <a-button @click="handleOpenOutline">
+              大纲编辑器
+            </a-button>
             <a-button @click="handleExport">
               导出
+            </a-button>
+            <a-button
+              v-if="chapters.length > 0"
+              type="default"
+              @click="handleStartReading"
+            >
+              开始阅读
             </a-button>
             <a-button type="primary" @click="goToCreate(novel.id)">
               生成章节
@@ -362,11 +384,17 @@ onMounted(() => {
 
         <!-- 标签页 -->
         <a-card :bordered="false" class="content-card">
-          <a-tabs v-model:activeKey="activeTab">
+          <a-tabs v-model:activeKey="activeTab" size="large">
             <!-- 章节列表 -->
-            <a-tab-pane key="chapters" tab="章节列表">
+            <a-tab-pane key="chapters">
+              <template #tab>
+                <span class="tab-label">
+                  <span class="tab-icon">📚</span>
+                  章节列表
+                </span>
+              </template>
               <div class="tab-header">
-                <span class="chapter-count">共 {{ chapters.length }} 章</span>
+                <span class="chapter-count">{{ chapters.length }} 章</span>
                 <a-button type="primary" @click="goToCreate(novel.id)">
                   生成新章节
                 </a-button>
@@ -381,67 +409,103 @@ onMounted(() => {
             </a-tab-pane>
 
             <!-- 小说信息 -->
-            <a-tab-pane key="info" tab="小说信息">
+            <a-tab-pane key="info">
+              <template #tab>
+                <span class="tab-label">
+                  <span class="tab-icon">📖</span>
+                  小说信息
+                </span>
+              </template>
               <NovelInfo :novel="novel" :chapters="chapters" />
             </a-tab-pane>
 
             <!-- 角色管理 -->
-            <a-tab-pane key="characters" tab="角色管理">
+            <a-tab-pane key="characters">
+              <template #tab>
+                <span class="tab-label">
+                  <span class="tab-icon">👥</span>
+                  角色管理
+                </span>
+              </template>
               <div class="tab-header">
-                <span class="chapter-count">共 {{ characters.length }} 个角色</span>
-                <a-button type="primary" @click="openCharacterModal()">
-                  添加角色
-                </a-button>
+                <span class="chapter-count">{{ characters.length }} 个角色</span>
+                <a-space>
+                  <a-radio-group v-model:value="characterViewMode" button-style="solid">
+                    <a-radio-button value="cards">卡片视图</a-radio-button>
+                    <a-radio-button value="graph">关系图谱</a-radio-button>
+                  </a-radio-group>
+                  <a-button type="primary" @click="openCharacterModal()">
+                    添加角色
+                  </a-button>
+                </a-space>
               </div>
-              
-              <a-spin :spinning="charactersLoading">
-                <div v-if="characters.length === 0" class="empty-state">
-                  <a-empty description="暂无角色，点击上方按钮添加" />
-                </div>
-                <div v-else class="character-grid">
-                  <a-card 
-                    v-for="character in characters" 
-                    :key="character.id" 
-                    class="character-card"
-                    size="small"
-                  >
-                    <template #title>
-                      <div class="character-title">
-                        <span>{{ character.name }}</span>
-                        <a-tag :color="characterTypeMap[character.type]?.color">
-                          {{ characterTypeMap[character.type]?.text }}
-                        </a-tag>
+
+              <!-- 卡片视图 -->
+              <div v-if="characterViewMode === 'cards'">
+                <a-spin :spinning="charactersLoading">
+                  <div v-if="characters.length === 0" class="empty-state">
+                    <a-empty description="暂无角色，点击上方按钮添加" />
+                  </div>
+                  <div v-else class="character-grid">
+                    <a-card
+                      v-for="character in characters"
+                      :key="character.id"
+                      class="character-card"
+                      size="small"
+                    >
+                      <template #title>
+                        <div class="character-title">
+                          <span>{{ character.name }}</span>
+                          <a-tag :color="characterTypeMap[character.type]?.color">
+                            {{ characterTypeMap[character.type]?.text }}
+                          </a-tag>
+                        </div>
+                      </template>
+                      <template #extra>
+                        <a-space>
+                          <a-button type="link" size="small" @click="openCharacterModal(character)">
+                            编辑
+                          </a-button>
+                          <a-button type="link" size="small" danger @click="handleDeleteCharacterConfirm(character)">
+                            删除
+                          </a-button>
+                        </a-space>
+                      </template>
+
+                      <div class="character-info">
+                        <p v-if="character.basicInfo?.identity">
+                          <strong>身份：</strong>{{ character.basicInfo.identity }}
+                        </p>
+                        <p v-if="character.basicInfo?.personality">
+                          <strong>性格：</strong>{{ character.basicInfo.personality }}
+                        </p>
+                        <p v-if="character.background">
+                          <strong>背景：</strong>{{ character.background }}
+                        </p>
                       </div>
-                    </template>
-                    <template #extra>
-                      <a-space>
-                        <a-button type="link" size="small" @click="openCharacterModal(character)">
-                          编辑
-                        </a-button>
-                        <a-button type="link" size="small" danger @click="handleDeleteCharacterConfirm(character)">
-                          删除
-                        </a-button>
-                      </a-space>
-                    </template>
-                    
-                    <div class="character-info">
-                      <p v-if="character.basicInfo?.identity">
-                        <strong>身份：</strong>{{ character.basicInfo.identity }}
-                      </p>
-                      <p v-if="character.basicInfo?.personality">
-                        <strong>性格：</strong>{{ character.basicInfo.personality }}
-                      </p>
-                      <p v-if="character.background">
-                        <strong>背景：</strong>{{ character.background }}
-                      </p>
-                    </div>
-                  </a-card>
-                </div>
-              </a-spin>
+                    </a-card>
+                  </div>
+                </a-spin>
+              </div>
+
+              <!-- 关系图谱视图 -->
+              <div v-else class="relationship-graph-container">
+                <RelationshipGraph
+                  v-if="novel"
+                  :novel-id="novel.id"
+                  :characters="characters"
+                />
+              </div>
             </a-tab-pane>
 
             <!-- 伏笔管理 -->
-            <a-tab-pane key="foreshadowing" tab="伏笔管理">
+            <a-tab-pane key="foreshadowing">
+              <template #tab>
+                <span class="tab-label">
+                  <span class="tab-icon">🎯</span>
+                  伏笔管理
+                </span>
+              </template>
               <div class="tab-header">
                 <div class="foreshadowing-stats">
                   <a-tag color="orange">待回收: {{ pendingForeshadowing.length }}</a-tag>
@@ -505,7 +569,13 @@ onMounted(() => {
             </a-tab-pane>
 
             <!-- 生成任务队列 -->
-            <a-tab-pane key="tasks" tab="生成任务">
+            <a-tab-pane key="tasks">
+              <template #tab>
+                <span class="tab-label">
+                  <span class="tab-icon">⚡</span>
+                  生成任务
+                </span>
+              </template>
               <div class="tab-header">
                 <div class="task-stats">
                   <a-tag v-if="taskStats.running > 0" color="processing">运行中: {{ taskStats.running }}</a-tag>
@@ -645,44 +715,83 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-lg);
+  max-width: 1200px;
+  margin: 0 auto;
 }
 
 .content-card {
   background: var(--bg-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.content-card :deep(.ant-card-body) {
+  padding: 0;
+}
+
+.content-card :deep(.ant-tabs-nav) {
+  margin: 0;
+  padding: 0 var(--spacing-lg);
+  background: linear-gradient(180deg, var(--bg-secondary) 0%, transparent 100%);
+}
+
+.content-card :deep(.ant-tabs-content) {
+  padding: var(--spacing-xl);
 }
 
 .tab-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
 }
 
 .chapter-count {
   color: var(--text-secondary);
   font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.chapter-count::before {
+  content: '📚';
 }
 
 .empty-state {
-  padding: 40px 0;
+  padding: 60px 0;
   text-align: center;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
 }
 
 /* 角色卡片样式 */
 .character-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--spacing-lg);
 }
 
 .character-card {
   height: fit-content;
+  border-radius: var(--radius-md);
+  transition: all 0.3s;
+  border: 1px solid var(--border-color);
+}
+
+.character-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
 .character-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 
 .character-info {
@@ -691,58 +800,79 @@ onMounted(() => {
 }
 
 .character-info p {
-  margin: 4px 0;
+  margin: var(--spacing-xs) 0;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
 }
 
 /* 伏笔卡片样式 */
 .foreshadowing-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--spacing-md);
 }
 
 .foreshadowing-card {
-  border-left: 3px solid var(--ant-warning);
+  border-left: 4px solid #faad14;
+  border-radius: var(--radius-md);
+  transition: all 0.3s;
+}
+
+.foreshadowing-card:hover {
+  transform: translateX(4px);
+  box-shadow: var(--shadow-sm);
 }
 
 .foreshadowing-card.foreshadowing-resolved {
-  border-left-color: var(--ant-success);
-  opacity: 0.7;
+  border-left-color: #52c41a;
+  opacity: 0.8;
+  background: linear-gradient(135deg, rgba(82, 196, 26, 0.05) 0%, transparent 100%);
 }
 
 .foreshadowing-title {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
 }
 
 .foreshadowing-notes {
   margin: 0;
   font-size: 13px;
   color: var(--text-secondary);
+  padding: var(--spacing-sm);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
 }
 
 .foreshadowing-stats {
   display: flex;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 
 /* 任务卡片样式 */
 .task-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--spacing-md);
 }
 
 .task-card {
-  border-left: 3px solid var(--ant-primary);
+  border-left: 4px solid var(--primary-color);
+  border-radius: var(--radius-md);
+  transition: all 0.3s;
+}
+
+.task-card:hover {
+  box-shadow: var(--shadow-sm);
 }
 
 .task-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 
 .task-info {
@@ -750,19 +880,73 @@ onMounted(() => {
 }
 
 .task-info p {
-  margin: 4px 0;
+  margin: var(--spacing-xs) 0;
 }
 
 .task-stats {
   display: flex;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 
 :deep(.ant-tabs-tab) {
   font-size: 15px;
+  padding: 12px 16px;
 }
 
 :deep(.ant-tabs-tab-active) {
   font-weight: 600;
+}
+
+/* Tab 标签样式增强 */
+:deep(.ant-tabs-tab-btn) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 关系图谱容器 */
+.relationship-graph-container {
+  min-height: 500px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+/* 模态框样式 */
+:deep(.ant-modal-content) {
+  border-radius: var(--radius-lg);
+}
+
+:deep(.ant-modal-header) {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .character-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tab-header {
+    flex-direction: column;
+    gap: var(--spacing-md);
+    align-items: stretch;
+  }
+
+  .novel-detail-page {
+    padding: 0 var(--spacing-md);
+  }
+}
+
+/* Tab 标签样式 */
+.tab-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.tab-icon {
+  font-size: 16px;
 }
 </style>

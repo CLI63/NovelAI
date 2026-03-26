@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(python3 \"C:\\\\Users\\\\Admin\\\\.claude\\\\skills\\\\ui-ux-pro-max\\\\scripts\\\\search.py\" \"creative writing tool productivity modern clean content-focused\" --design-system -p \"NovelAI Writer\")",
+      "Read(//c/Users/Admin/.agents/skills/ui-ux-pro-max/**)",
+      "Bash(python scripts/search.py \"creative writing tool\" --design-system -p \"NovelAI\")"
+    ]
+  }
+}

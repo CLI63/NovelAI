@@ -209,6 +209,53 @@ export const prompts = {
 }
 
 用户反馈：`,
+
+  /**
+   * 伏笔提取提示词
+   * 用于从章节内容中自动识别和提取伏笔
+   */
+  foreshadowingExtraction: `你是一位资深的小说编辑，擅长分析和识别小说中的伏笔。请仔细分析提供的章节内容，提取其中埋设的伏笔。
+
+【伏笔识别标准】：
+1. 悬念性伏笔：暗示未来事件、留下疑问、引起读者好奇
+2. 角色伏笔：角色身份的秘密、隐藏的能力、潜在的关系
+3. 物品伏笔：特殊物品的出现、物品的特殊属性
+4. 环境伏笔：场景的细节暗示、氛围的铺垫
+5. 对话伏笔：角色对话中的暗示、预言、警告
+6. 情节伏笔：事件的伏线、因果的暗示
+
+【重要判断原则】：
+- 只有明确的伏笔才提取，不要过度解读
+- 伏笔应该有明确的"埋设"特征，而非普通的情节描述
+- 区分伏笔和普通情节推进
+
+请严格按照以下JSON格式返回结果（不要添加任何额外文字）：
+{
+  "foreshadowings": [
+    {
+      "content": "伏笔的具体内容描述（简洁明了，20-50字）",
+      "type": "伏笔类型（suspense/character/item/environment/dialogue/plot）",
+      "importance": "重要性（high/medium/low）",
+      "description": "伏笔的详细说明（包括为什么这是伏笔，可能的回收方向）",
+      "suggestedResolution": "建议的回收方式（50-100字）",
+      "suggestedChapterRange": "建议回收章节范围（如：5-10章后）",
+      "relatedCharacters": ["相关角色名称"],
+      "keywords": ["关键词"]
+    }
+  ]
+}
+
+如果章节中没有明显的伏笔，返回：
+{
+  "foreshadowings": []
+}
+
+【重要性判断标准】：
+- high：对主线剧情有重大影响，必须在后续回收
+- medium：对支线剧情或角色发展有影响
+- low：细节伏笔，可选回收
+
+章节内容：`,
 }
 
 /**
@@ -894,6 +941,479 @@ export function buildChapterOutlinePrompt(
 }
 
 /**
+ * 构建伏笔提取提示词
+ * @param {string} chapterContent - 章节内容
+ * @param {string} chapterTitle - 章节标题
+ * @param {number} chapterNumber - 章节号
+ * @param {Array} characters - 角色列表（用于关联分析）
+ */
+export function buildForeshadowingExtractionPrompt(chapterContent, chapterTitle, chapterNumber, characters = []) {
+  const messages = []
+
+  messages.push({
+    role: 'system',
+    content: '你是一位资深的小说编辑，擅长分析和识别小说中的伏笔。请严格按照JSON格式返回分析结果。',
+  })
+
+  let contextInfo = `请分析以下章节内容，提取其中的伏笔。\n\n`
+  contextInfo += `【章节信息】\n`
+  contextInfo += `章节号：第${chapterNumber}章\n`
+  contextInfo += `章节标题：${chapterTitle}\n\n`
+
+  // 提供角色信息以便关联
+  if (characters.length > 0) {
+    contextInfo += `【本小说角色列表】\n`
+    characters.forEach(char => {
+      contextInfo += `- ${char.name}（${char.type === 'protagonist' ? '主角' : char.identity || '配角'}）\n`
+    })
+    contextInfo += `\n`
+  }
+
+  contextInfo += `【章节内容】\n`
+  contextInfo += chapterContent
+
+  messages.push({
+    role: 'user',
+    content: contextInfo,
+  })
+
+  messages.push({
+    role: 'user',
+    content: prompts.foreshadowingExtraction,
+  })
+
+  return messages
+}
+
+/**
+ * 构建内容扩写提示词（整章扩写）
+ * @param {Object} novel - 小说信息
+ * @param {Object} chapter - 章节信息
+ * @param {number} targetWords - 目标字数
+ * @param {number} currentWords - 当前字数
+ */
+export function buildContentExpansionPrompt(novel, chapter, targetWords, currentWords) {
+  const messages = []
+
+  messages.push({
+    role: 'system',
+    content: `你是一位专业的小说编辑，擅长在保持原有剧情和风格的基础上扩充章节内容。你的任务是通过增加细节描写来达到目标字数。
+
+【扩写原则】：
+1. 保持原有剧情走向不变
+2. 保持人物性格一致
+3. 新增内容要自然融入原文
+4. 扩写要有价值，增加信息量或艺术性
+
+【扩写技巧】：
+- 环境描写：天气、光线、气味、声音、温度
+- 心理描写：内心独白、情绪变化、回忆联想
+- 对话丰富：增加互动、争论、幽默元素
+- 动作细节：战斗过程、日常动作的细致刻画
+- 外貌描写：人物神态、服饰、表情变化
+- 场景转换：增加过渡段落
+- 背景故事：适当补充设定信息`
+  })
+
+  let contextInfo = `【小说信息】\n`
+  contextInfo += `书名：${novel.title}\n`
+  contextInfo += `风格：${novel.style?.join('、') || '未设置'}\n\n`
+
+  contextInfo += `【章节信息】\n`
+  contextInfo += `章节号：第${chapter.chapterNumber}章\n`
+  contextInfo += `标题：${chapter.title}\n`
+  contextInfo += `当前字数：${currentWords}字\n`
+  contextInfo += `目标字数：${targetWords}字\n`
+  contextInfo += `需要增加：${targetWords - currentWords}字\n\n`
+
+  contextInfo += `【原章节内容】\n${chapter.content}\n`
+
+  messages.push({
+    role: 'user',
+    content: contextInfo
+  })
+
+  messages.push({
+    role: 'user',
+    content: `请扩写上述章节内容，使其达到${targetWords}字以上。
+
+【要求】：
+1. 保持原有剧情和风格
+2. 需要增加约${targetWords - currentWords}字
+3. 扩写内容要自然融合，不要生硬插入
+4. 优先扩写情节关键点、对话、心理活动等
+
+【返回格式】：
+只返回JSON格式：
+{
+  "content": "扩写后的完整章节内容（包含原文和新增内容）"
+}`
+  })
+
+  return messages
+}
+
+/**
+ * 构建段落扩写提示词
+ * @param {Object} novel - 小说信息
+ * @param {Object} chapter - 章节信息
+ * @param {string} paragraph - 待扩写的段落
+ * @param {number} targetExpansion - 目标扩写字数
+ */
+export function buildParagraphExpansionPrompt(novel, chapter, paragraph, targetExpansion) {
+  const messages = []
+
+  messages.push({
+    role: 'system',
+    content: `你是一位专业的小说编辑，擅长扩写和丰富段落内容。请在保持原意的基础上，通过增加细节描写来扩充段落。
+
+【扩写方向】：
+1. 增加感官描写（视觉、听觉、嗅觉、触觉）
+2. 深化心理活动
+3. 丰富对话内容
+4. 扩展动作细节
+5. 增加环境氛围描写`
+  })
+
+  let contextInfo = `【小说风格】${novel.style?.join('、') || '未设置'}\n`
+  contextInfo += `【章节标题】${chapter.title}\n\n`
+  contextInfo += `【待扩写段落】\n${paragraph}\n\n`
+  contextInfo += `【目标】增加约${targetExpansion}字\n`
+
+  messages.push({
+    role: 'user',
+    content: contextInfo
+  })
+
+  messages.push({
+    role: 'user',
+    content: `请扩写上述段落，使其更加丰富生动。
+
+【要求】：
+1. 保持原意和风格
+2. 增加约${targetExpansion}字
+3. 新增内容要自然融入
+
+【返回格式】：
+只返回JSON格式：
+{
+  "content": "扩写后的段落内容"
+}`
+  })
+
+  return messages
+}
+
+/**
+ * 构建伏笔回收提醒提示词
+ * @param {Array} pendingForeshadowings - 待回收伏笔列表
+ * @param {number} currentChapterNumber - 当前章节号
+ */
+export function buildForeshadowingReminderPrompt(pendingForeshadowings, currentChapterNumber) {
+  if (!pendingForeshadowings || pendingForeshadowings.length === 0) {
+    return null
+  }
+
+  let reminderText = `【伏笔回收提醒】\n`
+  reminderText += `当前即将生成第${currentChapterNumber}章，以下伏笔尚未回收：\n\n`
+
+  // 高优先级伏笔
+  const highImportance = pendingForeshadowings.filter(f => f.importance === 'high')
+  if (highImportance.length > 0) {
+    reminderText += `⚠️ 高优先级伏笔（强烈建议在近期回收）：\n`
+    highImportance.forEach(f => {
+      const plantedChapter = f.plantedInChapter || f.chapterNumber || '?'
+      const chaptersPassed = typeof plantedChapter === 'number' ? Math.max(0, currentChapterNumber - plantedChapter) : '?'
+      reminderText += `  - ${f.content}\n`
+      reminderText += `    埋设于第${plantedChapter}章，已过${chaptersPassed}章\n`
+      if (f.suggestedResolution) {
+        reminderText += `    建议回收：${f.suggestedResolution}\n`
+      }
+    })
+    reminderText += `\n`
+  }
+
+  // 普通伏笔
+  const normalImportance = pendingForeshadowings.filter(f => f.importance !== 'high')
+  if (normalImportance.length > 0) {
+    reminderText += `📝 待回收伏笔：\n`
+    normalImportance.slice(0, 5).forEach(f => {
+      const plantedChapter = f.plantedInChapter || f.chapterNumber || '?'
+      reminderText += `  - ${f.content}（埋设于第${plantedChapter}章）\n`
+    })
+    if (normalImportance.length > 5) {
+      reminderText += `  ... 还有${normalImportance.length - 5}个伏笔待回收\n`
+    }
+  }
+
+  return reminderText
+}
+
+/**
+ * 构建灵感扩写提示词
+ * @param {Object} inspiration - 灵感对象
+ */
+export function buildInspirationExpandPrompt(inspiration) {
+  const messages = []
+
+  messages.push({
+    role: 'system',
+    content: `你是一位资深的小说创作顾问和创意策划师。你擅长将简短的灵感扩展成丰富的创意设定。
+
+【扩写原则】：
+1. 保持核心创意点不变
+2. 补充背景设定和世界观元素
+3. 设计可能的角色和冲突
+4. 思考故事的潜在发展方向
+5. 增加细节使创意更加具体可感
+
+【扩写方向】：
+- 时间/地点设定
+- 可能的主角身份
+- 潜在的冲突和矛盾
+- 故事的核心看点
+- 可以融入的元素`
+  })
+
+  let content = `请扩写以下灵感：\n\n`
+  content += `【标题】${inspiration.title || '无标题'}\n`
+  content += `【内容】${inspiration.content}\n`
+
+  if (inspiration.tags?.length > 0) {
+    content += `【标签】${inspiration.tags.join('、')}\n`
+  }
+
+  if (inspiration.style) {
+    content += `【风格偏好】${inspiration.style}\n`
+  }
+
+  content += `\n请将这个灵感扩展成 300-500 字的创意描述，包括：
+1. 更详细的世界观设定
+2. 可能的主角和核心冲突
+3. 故事的主要看点
+4. 可发展的剧情方向
+
+直接输出扩写内容，不需要 JSON 格式。`
+
+  messages.push({
+    role: 'user',
+    content
+  })
+
+  return messages
+}
+
+/**
+ * 构建灵感引导问答提示词
+ * @param {Object} inspiration - 灵感对象
+ */
+export function buildInspirationQAPrompt(inspiration) {
+  const messages = []
+
+  messages.push({
+    role: 'system',
+    content: `你是一位资深的小说创作顾问。你的任务是通过提问引导用户完善和深化他们的灵感。
+
+【提问原则】：
+1. 问题要具体且有针对性
+2. 帮助用户思考故事的深度和广度
+3. 引导用户发现潜在的创意空间
+4. 问题数量控制在 3-5 个
+
+【问题方向】：
+- 角色塑造：主角是谁？有什么特点？
+- 冲突设计：核心矛盾是什么？主角面临什么挑战？
+- 世界观：故事发生在什么背景？有什么特殊设定？
+- 剧情发展：故事的开端、发展、高潮可能是怎样的？
+- 差异化：这个故事与其他同类作品有什么不同？`
+  })
+
+  messages.push({
+    role: 'user',
+    content: `请根据以下灵感，提出 3-5 个引导性问题，帮助我深化这个创意：
+
+【标题】${inspiration.title || '无标题'}
+【内容】${inspiration.content}
+${inspiration.tags?.length > 0 ? `【标签】${inspiration.tags.join('、')}` : ''}
+
+请以 JSON 格式返回：
+{
+  "questions": [
+    {
+      "question": "问题内容",
+      "purpose": "这个问题的目的",
+      "suggestions": ["可能的回答方向1", "可能的回答方向2"]
+    }
+  ],
+  "analysis": "对这个灵感的简要分析"
+}`
+  })
+
+  return messages
+}
+
+/**
+ * 构建多灵感融合提示词
+ * @param {Array} inspirations - 灵感列表
+ */
+export function buildMultiInspirationMergePrompt(inspirations) {
+  const messages = []
+
+  messages.push({
+    role: 'system',
+    content: `你是一位资深的小说创作顾问。你擅长将多个创意点融合，创作出完整且引人入胜的小说概览。
+
+【融合原则】：
+1. 寻找灵感之间的内在联系
+2. 统一世界观和时间线
+3. 整合角色和冲突
+4. 构建完整的故事脉络
+5. 保持创意的独特性和亮点`
+  })
+
+  let content = `请将以下 ${inspirations.length} 个灵感融合，创作一个完整的小说概览：\n\n`
+
+  inspirations.forEach((insp, index) => {
+    content += `【灵感 ${index + 1}】\n`
+    content += `标题：${insp.title || '无标题'}\n`
+    content += `内容：${insp.content}\n`
+    if (insp.expandedContent) {
+      content += `扩写：${insp.expandedContent}\n`
+    }
+    if (insp.tags?.length > 0) {
+      content += `标签：${insp.tags.join('、')}\n`
+    }
+    content += `\n`
+  })
+
+  content += prompts.novelOverview
+
+  messages.push({
+    role: 'user',
+    content
+  })
+
+  return messages
+}
+
+/**
+ * 构建灵感评分提示词
+ * @param {Object} inspiration - 灵感对象
+ */
+export function buildInspirationScorePrompt(inspiration) {
+  const messages = []
+
+  messages.push({
+    role: 'system',
+    content: `你是一位资深的小说编辑和市场分析师。你需要从多个维度评估一个灵感的创作潜力和市场价值。
+
+【评分维度】：
+1. 创新性（0-30分）：创意是否新颖独特，是否有差异化亮点
+2. 可扩展性（0-25分）：是否能够支撑长篇故事，是否有足够的剧情发展空间
+3. 市场匹配度（0-25分）：是否符合当前市场热点和读者偏好
+4. 完成难度（0-20分）：实现这个创意的难度，分数越高表示越容易实现
+
+【评估标准】：
+- 90-100分：极佳创意，强烈推荐开发
+- 75-89分：优秀创意，值得深入开发
+- 60-74分：良好创意，可以尝试
+- 45-59分：一般创意，需要更多打磨
+- 0-44分：创意较弱，建议重新构思`
+  })
+
+  let content = `请评估以下灵感的创作潜力和市场价值：\n\n`
+  content += `【标题】${inspiration.title || '无标题'}\n`
+  content += `【内容】${inspiration.content}\n`
+
+  if (inspiration.expandedContent) {
+    content += `【扩写】${inspiration.expandedContent}\n`
+  }
+  if (inspiration.tags?.length > 0) {
+    content += `【标签】${inspiration.tags.join('、')}\n`
+  }
+  if (inspiration.style) {
+    content += `【风格偏好】${inspiration.style}\n`
+  }
+
+  content += `\n请以 JSON 格式返回评分结果：
+{
+  "totalScore": 总分,
+  "dimensions": {
+    "innovation": {
+      "score": 创新性分数,
+      "comment": "评价说明"
+    },
+    "expandability": {
+      "score": 可扩展性分数,
+      "comment": "评价说明"
+    },
+    "marketFit": {
+      "score": 市场匹配度分数,
+      "comment": "评价说明"
+    },
+    "feasibility": {
+      "score": 完成难度分数,
+      "comment": "评价说明"
+    }
+  },
+  "strengths": ["优点1", "优点2", "优点3"],
+  "weaknesses": ["不足1", "不足2"],
+  "suggestions": ["改进建议1", "改进建议2"],
+  "comparableWorks": ["类似作品参考1", "类似作品参考2"],
+  "recommendation": "综合推荐意见"
+}`
+
+  messages.push({
+    role: 'user',
+    content
+  })
+
+  return messages
+}
+
+/**
+ * 构建模板选择提示词
+ * @param {Object} inspiration - 灵感对象
+ * @param {Array} templates - 可用模板列表
+ */
+export function buildTemplateSelectionPrompt(inspiration, templates) {
+  const messages = []
+
+  messages.push({
+    role: 'system',
+    content: `你是一位资深的小说创作顾问。请根据用户的灵感，推荐最合适的小说创作模板。
+
+【推荐原则】：
+1. 匹配灵感的风格和类型
+2. 考虑故事的发展潜力
+3. 选择能够发挥灵感优势的模板`
+  })
+
+  let content = `请为以下灵感推荐最合适的创作模板：\n\n`
+  content += `【灵感】${inspiration.title || '无标题'}\n`
+  content += `${inspiration.content}\n\n`
+
+  content += `【可用模板】\n`
+  templates.forEach((t, index) => {
+    content += `${index + 1}. ${t.name}：${t.description}\n`
+  })
+
+  content += `\n请返回 JSON 格式：
+{
+  "recommendedTemplate": "推荐的模板名称",
+  "reason": "推荐理由",
+  "adaptations": ["需要调整的方面1", "需要调整的方面2"]
+}`
+
+  messages.push({
+    role: 'user',
+    content
+  })
+
+  return messages
+}
+
+/**
  * 构建基于大纲的章节生成提示词
  * @param {Object} novel - 小说信息
  * @param {Object} outline - 章节大纲
@@ -1017,3 +1537,75 @@ export function buildChapterFromOutlinePrompt(
 
   return messages
 }
+
+/**
+ * 大纲生成提示词
+ */
+export const outlineGeneration = `你是一位资深的小说策划师。请根据以下小说信息，生成一个详细的章节大纲。
+
+请严格按照以下JSON格式返回结果（不要添加任何额外文字）：
+{
+  "mainPlot": {
+    "name": "主线名称",
+    "description": "主线剧情描述（200字以内）",
+    "events": [
+      {
+        "title": "事件标题",
+        "description": "事件描述",
+        "estimatedChapter": "预计发生章节",
+        "importance": "重要性（high/medium/low）"
+      }
+    ]
+  },
+  "subPlots": [
+    {
+      "name": "支线名称",
+      "description": "支线剧情描述",
+      "type": "支线类型（romance/growth/mystery/conflict等）",
+      "events": []
+    }
+  ],
+  "chapterOutline": [
+    {
+      "chapterNumber": 章节号,
+      "title": "章节标题",
+      "summary": "章节概要（50-100字）",
+      "mainEvents": ["主要事件1", "主要事件2"],
+      "estimatedWords": 预估字数
+    }
+  ],
+  "totalEstimatedWords": 总预估字数
+}
+
+小说书名：{title}
+类型：{genre}
+主题：{theme}
+总章节数：{totalChapters}
+主要角色：{mainCharacters}`
+
+/**
+ * 剧情事件建议提示词
+ */
+export const plotEventSuggestion = `你是一位资深的小说策划师。请根据剧情线信息，为其建议合适的事件节点。
+
+请严格按照以下JSON格式返回结果（不要添加任何额外文字）：
+{
+  "suggestedEvents": [
+    {
+      "title": "事件标题",
+      "description": "事件详细描述（100字以内）",
+      "type": "事件类型（conflict/turning_point/climax/resolution等）",
+      "importance": "重要性（high/medium/low）",
+      "suggestedPosition": "建议在剧情线的位置（开头/中段/结尾）",
+      "involvedCharacters": ["涉及的角色"],
+      "potentialForeshadowing": ["可能埋设的伏笔"],
+      "impactOnMainPlot": "对主线的影响"
+    }
+  ],
+  "plotTension": "剧情张力评估",
+  "suggestions": ["改进建议"]
+}
+
+剧情线名称：{plotLineName}
+剧情线描述：{plotLineDescription}
+上下文：{context}`

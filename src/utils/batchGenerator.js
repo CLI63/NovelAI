@@ -3,6 +3,7 @@ import { message } from 'ant-design-vue'
 import { generationTaskDao, chapterDao } from '@/utils/dao'
 import { buildStreamChapterPrompt, buildChapterOutlinePrompt, buildChapterFromOutlinePrompt } from '@/utils/prompts'
 import { buildChapterContext } from '@/utils/contextBuilder'
+import { checkWordCount, expandContent, getExpanderConfig } from '@/utils/contentExpander'
 
 /**
  * 生成策略配置
@@ -137,9 +138,10 @@ export async function createSmartBatchTask(novelId, startChapter, endChapter, no
  * @param {Function} generateStream - 流式生成函数
  * @param {Function} generate - 普通生成函数
  * @param {Object} callbacks - 回调函数 { onProgress, onChapterComplete, onError }
+ * @param {Object} options - 可选配置 { aiConfig, expanderConfig }
  * @returns {Promise<boolean>} 是否成功
  */
-export async function executeBatchTask(taskId, novel, generateStream, generate, callbacks = {}) {
+export async function executeBatchTask(taskId, novel, generateStream, generate, callbacks = {}, options = {}) {
   const task = await generationTaskDao.getById(taskId)
   if (!task) {
     message.error('任务不存在')
@@ -238,6 +240,42 @@ export async function executeBatchTask(taskId, novel, generateStream, generate, 
         if (lines.length > 0 && !title) {
           title = lines[0].trim()
           content = lines.slice(1).join('\n').trim()
+        }
+
+        // 字数补偿机制
+        const expanderConfig = getExpanderConfig(options.expanderConfig)
+        if (expanderConfig.enabled && options.aiConfig) {
+          const checkResult = checkWordCount(content, chapterConfig.minWords)
+
+          if (checkResult.needsExpansion) {
+            console.log(`章节 ${chapterConfig.number} 字数不足 (${checkResult.currentWords}/${chapterConfig.minWords})，触发补偿扩写...`)
+
+            if (callbacks.onExpansionStart) {
+              callbacks.onExpansionStart(chapterConfig.number, checkResult)
+            }
+
+            try {
+              const expandResult = await expandContent(
+                novel,
+                { chapterNumber: chapterConfig.number, title, content },
+                chapterConfig.minWords,
+                options.aiConfig,
+                expanderConfig
+              )
+
+              if (expandResult.success && expandResult.expandedWords > 0) {
+                content = expandResult.content
+                console.log(`章节 ${chapterConfig.number} 补偿完成，新增 ${expandResult.expandedWords} 字`)
+
+                if (callbacks.onExpansionComplete) {
+                  callbacks.onExpansionComplete(chapterConfig.number, expandResult)
+                }
+              }
+            } catch (expandError) {
+              console.error(`章节 ${chapterConfig.number} 字数补偿失败:`, expandError)
+              // 补偿失败不影响主流程
+            }
+          }
         }
 
         // 更新章节完成状态

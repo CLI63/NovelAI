@@ -1,6 +1,9 @@
 import { ref, computed } from 'vue'
 import { message } from 'ant-design-vue'
-import { foreshadowingDao } from '@/utils/dao'
+import { foreshadowingDao, characterDao, chapterDao } from '@/utils/dao'
+import { callAI } from '@/utils/api'
+import { useAppStore } from '@/stores/app'
+import { buildForeshadowingExtractionPrompt, buildForeshadowingReminderPrompt } from '@/utils/prompts'
 
 /**
  * 伏笔管理组合式函数
@@ -164,12 +167,352 @@ export function useForeshadowing() {
    * @param {string} chapterContent - 章节内容
    * @param {number} chapterId - 章节ID
    * @param {number} novelId - 小说ID
+   * @returns {Promise<Array>} 提取的伏笔列表
    */
   const extractFromChapter = async (chapterContent, chapterId, novelId) => {
-    // 这里可以调用AI来分析章节内容，提取可能的伏笔
-    // 目前返回空数组，后续可以集成AI分析
-    console.log('提取伏笔功能待实现', { chapterContent: chapterContent.substring(0, 100), chapterId, novelId })
-    return []
+    const appStore = useAppStore()
+    const apiKey = appStore.getCurrentApiKey()
+    const provider = appStore.settings.aiProvider
+    const model = appStore.getCurrentModel()
+
+    if (!apiKey) {
+      console.warn('未配置 API Key，无法提取伏笔')
+      return []
+    }
+
+    loading.value = true
+    error.value = null
+
+    try {
+      // 获取章节信息
+      const chapter = await chapterDao.getById(chapterId)
+      if (!chapter) {
+        console.warn('章节不存在', chapterId)
+        return []
+      }
+
+      // 获取小说角色列表（用于关联分析）
+      const characters = await characterDao.getByNovelId(novelId)
+
+      // 构建提取提示词
+      const messages = buildForeshadowingExtractionPrompt(
+        chapterContent,
+        chapter.title,
+        chapter.chapterNumber,
+        characters
+      )
+
+      // 调用 AI 提取伏笔
+      const response = await callAI(messages, provider, apiKey, model)
+
+      // 解析 AI 返回的 JSON
+      const foreshadowings = parseForeshadowingResponse(response)
+
+      // 保存提取的伏笔并关联角色
+      const savedForeshadowings = []
+      for (const foreshadow of foreshadowings) {
+        const foreshadowData = {
+          novelId,
+          chapterId,
+          content: foreshadow.content,
+          type: foreshadow.type || 'plot',
+          importance: foreshadow.importance || 'medium',
+          description: foreshadow.description || '',
+          suggestedResolution: foreshadow.suggestedResolution || '',
+          suggestedChapterRange: foreshadow.suggestedChapterRange || '',
+          relatedCharacters: foreshadow.relatedCharacters || [],
+          keywords: foreshadow.keywords || [],
+          status: 'pending',
+          plantedInChapter: chapter.chapterNumber
+        }
+
+        const id = await foreshadowingDao.add(foreshadowData)
+        savedForeshadowings.push({ id, ...foreshadowData })
+      }
+
+      if (savedForeshadowings.length > 0) {
+        message.success(`成功提取 ${savedForeshadowings.length} 个伏笔`)
+      }
+
+      return savedForeshadowings
+    } catch (err) {
+      error.value = err.message
+      console.error('提取伏笔失败:', err)
+      message.error('提取伏笔失败：' + err.message)
+      return []
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
+   * 解析 AI 返回的伏笔提取结果
+   * @param {string} response - AI 返回的 JSON 字符串
+   * @returns {Array} 解析后的伏笔数组
+   */
+  const parseForeshadowingResponse = (response) => {
+    try {
+      // 尝试提取 JSON 内容
+      let jsonStr = response.trim()
+
+      // 移除可能的 markdown 代码块标记
+      if (jsonStr.startsWith('```json')) {
+        jsonStr = jsonStr.slice(7)
+      } else if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.slice(3)
+      }
+      if (jsonStr.endsWith('```')) {
+        jsonStr = jsonStr.slice(0, -3)
+      }
+
+      const parsed = JSON.parse(jsonStr.trim())
+
+      if (parsed.foreshadowings && Array.isArray(parsed.foreshadowings)) {
+        return parsed.foreshadowings
+      }
+
+      return []
+    } catch (err) {
+      console.error('解析伏笔提取结果失败:', err)
+      return []
+    }
+  }
+
+  /**
+   * 伏笔关联性分析 - 自动关联角色和章节
+   * @param {number} novelId - 小说ID
+   * @param {Object} options - 配置选项
+   * @returns {Promise<Object>} 关联分析结果
+   */
+  const analyzeForeshadowingRelations = async (novelId, options = {}) => {
+    try {
+      const foreshadowings = await foreshadowingDao.getByNovelId(novelId)
+      const characters = await characterDao.getByNovelId(novelId)
+      const chapters = await chapterDao.getByNovelId(novelId)
+
+      const relations = {
+        characterRelations: [],    // 角色相关伏笔
+        chapterRelations: [],      // 章节伏笔分布
+        orphanedForeshadowings: [], // 未关联的伏笔
+        suggestions: []            // 关联建议
+      }
+
+      // 构建角色名称映射
+      const characterNames = new Map()
+      characters.forEach(char => {
+        characterNames.set(char.name, char)
+        // 同时存储可能的别名
+        if (char.basicInfo?.aliases) {
+          char.basicInfo.aliases.forEach(alias => {
+            characterNames.set(alias, char)
+          })
+        }
+      })
+
+      // 分析每个伏笔的关联
+      for (const foreshadow of foreshadowings) {
+        const relatedChars = []
+        const charNames = foreshadow.relatedCharacters || []
+
+        // 检查已关联的角色
+        for (const charName of charNames) {
+          const character = characterNames.get(charName)
+          if (character) {
+            relatedChars.push({
+              foreshadowId: foreshadow.id,
+              characterId: character.id,
+              characterName: character.name,
+              relationType: 'explicit' // 显式关联
+            })
+          }
+        }
+
+        // 尝试从内容中提取隐式关联
+        const content = foreshadow.content + ' ' + (foreshadow.description || '')
+        for (const [name, character] of characterNames) {
+          if (!charNames.includes(name) && content.includes(name)) {
+            relatedChars.push({
+              foreshadowId: foreshadow.id,
+              characterId: character.id,
+              characterName: character.name,
+              relationType: 'implicit' // 隐式关联
+            })
+
+            // 添加关联建议
+            relations.suggestions.push({
+              foreshadowId: foreshadow.id,
+              foreshadowContent: foreshadow.content,
+              suggestedCharacter: character.name,
+              reason: '伏笔内容中提及该角色'
+            })
+          }
+        }
+
+        relations.characterRelations.push(...relatedChars)
+
+        // 检查是否为孤立伏笔
+        if (relatedChars.length === 0 && (!foreshadow.relatedCharacters || foreshadow.relatedCharacters.length === 0)) {
+          relations.orphanedForeshadowings.push(foreshadow)
+        }
+      }
+
+      // 分析章节伏笔分布
+      const chapterForeshadowCount = new Map()
+      foreshadowings.forEach(f => {
+        const chapterNum = f.plantedInChapter || f.chapterNumber
+        if (chapterNum) {
+          chapterForeshadowCount.set(chapterNum, (chapterForeshadowCount.get(chapterNum) || 0) + 1)
+        }
+      })
+
+      chapters.forEach(chapter => {
+        relations.chapterRelations.push({
+          chapterId: chapter.id,
+          chapterNumber: chapter.chapterNumber,
+          title: chapter.title,
+          foreshadowCount: chapterForeshadowCount.get(chapter.chapterNumber) || 0
+        })
+      })
+
+      return relations
+    } catch (err) {
+      console.error('伏笔关联分析失败:', err)
+      return {
+        characterRelations: [],
+        chapterRelations: [],
+        orphanedForeshadowings: [],
+        suggestions: []
+      }
+    }
+  }
+
+  /**
+   * 伏笔遗漏预警 - 检测高优先级伏笔和长期未回收伏笔
+   * @param {number} novelId - 小说ID
+   * @param {Object} options - 配置选项
+   * @returns {Promise<Object>} 预警信息
+   */
+  const checkForeshadowingWarnings = async (novelId, options = {}) => {
+    const {
+      highImportanceThreshold = 3,    // 高优先级伏笔超过N章未回收则预警
+      longPendingThreshold = 10,      // 普通伏笔超过N章未回收则预警
+      currentChapterNumber = null     // 当前章节号（可选）
+    } = options
+
+    try {
+      const pending = await foreshadowingDao.getPending(novelId)
+      const chapters = await chapterDao.getByNovelId(novelId)
+
+      // 确定当前最新章节号
+      let latestChapterNum = currentChapterNumber
+      if (!latestChapterNum && chapters.length > 0) {
+        latestChapterNum = Math.max(...chapters.map(ch => ch.chapterNumber))
+      }
+
+      const warnings = {
+        highPriority: [],      // 高优先级伏笔预警
+        longPending: [],       // 长期未回收伏笔预警
+        statistics: {
+          totalPending: pending.length,
+          highImportanceCount: 0,
+          warningCount: 0
+        },
+        reminder: null         // 生成时的提醒文本
+      }
+
+      for (const foreshadow of pending) {
+        const plantedChapter = foreshadow.plantedInChapter || foreshadow.chapterNumber || 1
+        const chaptersSincePlanted = latestChapterNum ? latestChapterNum - plantedChapter : 0
+
+        // 高优先级伏笔预警
+        if (foreshadow.importance === 'high') {
+          warnings.statistics.highImportanceCount++
+
+          if (chaptersSincePlanted >= highImportanceThreshold) {
+            warnings.highPriority.push({
+              ...foreshadow,
+              chaptersSincePlanted,
+              warningLevel: chaptersSincePlanted >= highImportanceThreshold * 2 ? 'critical' : 'warning',
+              message: `高优先级伏笔"${foreshadow.content}"已过${chaptersSincePlanted}章未回收`
+            })
+            warnings.statistics.warningCount++
+          }
+        }
+        // 长期未回收伏笔预警
+        else if (chaptersSincePlanted >= longPendingThreshold) {
+          warnings.longPending.push({
+            ...foreshadow,
+            chaptersSincePlanted,
+            warningLevel: 'info',
+            message: `伏笔"${foreshadow.content}"已过${chaptersSincePlanted}章未回收，建议近期处理`
+          })
+          warnings.statistics.warningCount++
+        }
+      }
+
+      // 生成提醒文本（用于章节生成时）
+      warnings.reminder = buildForeshadowingReminderPrompt(pending, latestChapterNum || 1)
+
+      return warnings
+    } catch (err) {
+      console.error('伏笔预警检查失败:', err)
+      return {
+        highPriority: [],
+        longPending: [],
+        statistics: { totalPending: 0, highImportanceCount: 0, warningCount: 0 },
+        reminder: null
+      }
+    }
+  }
+
+  /**
+   * 获取生成章节时的伏笔上下文
+   * @param {number} novelId - 小说ID
+   * @param {number} chapterNumber - 即将生成的章节号
+   * @returns {Promise<Object>} 伏笔上下文信息
+   */
+  const getForeshadowingContextForGeneration = async (novelId, chapterNumber) => {
+    try {
+      const pending = await foreshadowingDao.getPending(novelId)
+      const highImportance = pending.filter(f => f.importance === 'high')
+
+      // 计算预警信息
+      const warnings = await checkForeshadowingWarnings(novelId, {
+        currentChapterNumber: chapterNumber
+      })
+
+      return {
+        pendingCount: pending.length,
+        highImportanceCount: highImportance.length,
+        pending: pending.slice(0, 10).map(f => ({
+          id: f.id,
+          content: f.content,
+          importance: f.importance,
+          type: f.type,
+          plantedInChapter: f.plantedInChapter || f.chapterNumber,
+          relatedCharacters: f.relatedCharacters || [],
+          suggestedResolution: f.suggestedResolution || ''
+        })),
+        highImportance: highImportance.map(f => ({
+          id: f.id,
+          content: f.content,
+          plantedInChapter: f.plantedInChapter || f.chapterNumber,
+          suggestedResolution: f.suggestedResolution || ''
+        })),
+        warnings,
+        reminder: warnings.reminder
+      }
+    } catch (err) {
+      console.error('获取伏笔上下文失败:', err)
+      return {
+        pendingCount: 0,
+        highImportanceCount: 0,
+        pending: [],
+        highImportance: [],
+        warnings: null,
+        reminder: null
+      }
+    }
   }
 
   /**
@@ -227,6 +570,9 @@ export function useForeshadowing() {
     getPendingForeshadowings,
     getHighImportancePending,
     getForeshadowingSummary,
-    extractFromChapter
+    extractFromChapter,
+    analyzeForeshadowingRelations,
+    checkForeshadowingWarnings,
+    getForeshadowingContextForGeneration
   }
 }

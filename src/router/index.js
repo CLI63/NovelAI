@@ -9,6 +9,16 @@ const router = createRouter({
       component: () => import('../views/NovelList.vue'),
     },
     {
+      path: '/inspiration',
+      name: 'inspiration',
+      component: () => import('../views/InspirationWorkshop.vue'),
+    },
+    {
+      path: '/tools',
+      name: 'writingTools',
+      component: () => import('../views/WritingTools.vue'),
+    },
+    {
       path: '/novel/create',
       name: 'novelCreate',
       component: () => import('../views/NovelCreate.vue'),
@@ -32,6 +42,21 @@ const router = createRouter({
       path: '/novel/:id/chapter/:num',
       name: 'chapterDetail',
       component: () => import('../views/ChapterDetail.vue'),
+    },
+    {
+      path: '/reader/:id',
+      name: 'reader',
+      component: () => import('../views/NovelReader.vue'),
+    },
+    {
+      path: '/reader/:id/chapter/:chapter',
+      name: 'readerChapter',
+      component: () => import('../views/NovelReader.vue'),
+    },
+    {
+      path: '/novel/:id/outline',
+      name: 'outlineEditor',
+      component: () => import('../views/OutlineEditor.vue'),
     },
     {
       path: '/settings',

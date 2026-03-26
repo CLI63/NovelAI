@@ -20,6 +20,11 @@ const form = ref({
   deepseekModel: 'deepseek-chat',
   doubaoModel: 'doubao-pro-32k-chat',
   timeout: 180000,
+  // 字数补偿配置
+  wordCountCompensation: true,
+  compensationThreshold: 0.8,
+  maxExpandAttempts: 2,
+  expansionStrategy: 'paragraph',
 })
 
 const loading = ref(false)
@@ -94,6 +99,12 @@ const currentModel = computed({
     const provider = form.value.aiProvider
     form.value[`${provider}Model`] = val
   },
+})
+
+// 补偿阈值百分比（用于滑块）
+const thresholdPercent = computed({
+  get: () => Math.round(form.value.compensationThreshold * 100),
+  set: (val) => { form.value.compensationThreshold = val / 100 }
 })
 
 // 加载设置
@@ -268,9 +279,15 @@ onMounted(() => {
 
     <!-- 设置内容 -->
     <a-card :bordered="false" class="settings-card">
-      <a-tabs v-model:activeKey="activeTab">
+      <a-tabs v-model:activeKey="activeTab" size="large">
         <!-- API设置 -->
-        <a-tab-pane key="api" tab="🔑 API设置">
+        <a-tab-pane key="api">
+          <template #tab>
+            <span class="tab-label">
+              <span class="tab-icon">🔑</span>
+              API设置
+            </span>
+          </template>
           <div class="section-header">
             <h3 class="section-title">AI 提供商配置</h3>
             <p class="section-desc">选择您偏好的AI服务提供商并配置API密钥</p>
@@ -352,10 +369,16 @@ onMounted(() => {
         </a-tab-pane>
 
         <!-- 数据管理 -->
-        <a-tab-pane key="data" tab="💾 数据管理">
+        <a-tab-pane key="data">
+          <template #tab>
+            <span class="tab-label">
+              <span class="tab-icon">💾</span>
+              数据管理
+            </span>
+          </template>
           <div class="section-header">
             <h3 class="section-title">数据备份与恢复</h3>
-            <p class="section-desc">导出或导入您的小说数据</p>
+            <p class="section-desc">导出或导入您的小说数据，确保创作成果安全</p>
           </div>
 
           <div class="data-actions">
@@ -397,6 +420,73 @@ onMounted(() => {
             </div>
           </div>
         </a-tab-pane>
+
+        <!-- 生成设置 -->
+        <a-tab-pane key="generation">
+          <template #tab>
+            <span class="tab-label">
+              <span class="tab-icon">📝</span>
+              生成设置
+            </span>
+          </template>
+          <div class="section-header">
+            <h3 class="section-title">字数补偿机制</h3>
+            <p class="section-desc">当生成的章节字数不足时，自动进行内容扩写</p>
+          </div>
+
+          <a-form layout="vertical" class="settings-form">
+            <!-- 启用字数补偿 -->
+            <a-form-item label="启用字数补偿">
+              <a-switch v-model:checked="form.wordCountCompensation" />
+              <div class="input-hint">开启后，当章节字数不足时会自动触发扩写</div>
+            </a-form-item>
+
+            <!-- 补偿阈值 -->
+            <a-form-item label="补偿阈值">
+              <a-slider
+                v-model:value="thresholdPercent"
+                :min="50"
+                :max="100"
+                :disabled="!form.wordCountCompensation"
+                :marks="{ 50: '50%', 70: '70%', 80: '80%', 90: '90%', 100: '100%' }"
+              />
+              <div class="input-hint">
+                当章节字数低于目标字数的 {{ Math.round(form.compensationThreshold * 100) }}% 时触发补偿
+              </div>
+            </a-form-item>
+
+            <!-- 扩写策略 -->
+            <a-form-item label="扩写策略">
+              <a-radio-group v-model:value="form.expansionStrategy" :disabled="!form.wordCountCompensation">
+                <a-radio value="paragraph">段落扩写（推荐）</a-radio>
+                <a-radio value="whole">整章扩写</a-radio>
+              </a-radio-group>
+              <div class="input-hint">
+                段落扩写：选择关键段落进行针对性扩写，效率更高；整章扩写：重新生成整章内容
+              </div>
+            </a-form-item>
+
+            <!-- 最大尝试次数 -->
+            <a-form-item label="最大扩写尝试次数">
+              <a-input-number
+                v-model:value="form.maxExpandAttempts"
+                :min="1"
+                :max="5"
+                :disabled="!form.wordCountCompensation"
+                size="large"
+                style="width: 150px"
+              />
+              <div class="input-hint">每次扩写的最大尝试次数，避免过度消耗API额度</div>
+            </a-form-item>
+
+            <!-- 操作按钮 -->
+            <div class="form-actions">
+              <a-button type="primary" :loading="loading" size="large" @click="handleSave">
+                保存设置
+              </a-button>
+            </div>
+          </a-form>
+        </a-tab-pane>
       </a-tabs>
     </a-card>
   </div>
@@ -407,14 +497,35 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-lg);
+  max-width: 900px;
+  margin: 0 auto;
 }
 
 .settings-card {
   background: var(--bg-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.settings-card :deep(.ant-card-body) {
+  padding: 0;
+}
+
+.settings-card :deep(.ant-tabs-nav) {
+  margin: 0;
+  padding: 0 var(--spacing-lg);
+  background: linear-gradient(180deg, var(--bg-secondary) 0%, transparent 100%);
+}
+
+.settings-card :deep(.ant-tabs-content) {
+  padding: var(--spacing-xl);
 }
 
 .section-header {
-  margin-bottom: var(--spacing-lg);
+  margin-bottom: var(--spacing-xl);
+  padding-bottom: var(--spacing-md);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .section-title {
@@ -422,6 +533,17 @@ onMounted(() => {
   font-size: 18px;
   font-weight: 600;
   color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.section-title::before {
+  content: '';
+  width: 4px;
+  height: 18px;
+  background: var(--primary-gradient);
+  border-radius: 2px;
 }
 
 .section-desc {
@@ -445,50 +567,56 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
-  padding: var(--spacing-md);
+  padding: var(--spacing-lg);
   background: var(--bg-secondary);
   border: 2px solid var(--border-color);
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: var(--transition-fast);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .provider-card:hover {
   border-color: var(--primary-color);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
 .provider-card.active {
   border-color: var(--primary-color);
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.08) 100%);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
 }
 
 .provider-check {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 20px;
-  height: 20px;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
   background: var(--primary-gradient);
   color: white;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 14px;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
 }
 
 .provider-icon {
-  font-size: 32px;
+  font-size: 36px;
+  line-height: 1;
 }
 
 .provider-info {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .provider-name {
   font-weight: 600;
+  font-size: 15px;
   color: var(--text-primary);
 }
 
@@ -501,25 +629,36 @@ onMounted(() => {
   margin-top: var(--spacing-xs);
   font-size: 12px;
   color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .hint-link {
   color: var(--primary-color);
   text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.2s;
 }
 
 .hint-link:hover {
   text-decoration: underline;
+  color: #40a9ff;
 }
 
 .link-icon {
-  margin-right: 4px;
+  font-size: 14px;
 }
 
 .form-actions {
   margin-top: var(--spacing-xl);
-  padding-top: var(--spacing-lg);
-  border-top: 1px solid var(--border-color);
+  padding: var(--spacing-lg);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  display: flex;
+  justify-content: center;
 }
 
 .data-actions {
@@ -536,20 +675,86 @@ onMounted(() => {
   padding: var(--spacing-lg);
   background: var(--bg-secondary);
   border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  transition: all 0.2s;
+}
+
+.action-item:hover {
+  border-color: var(--primary-color);
+  box-shadow: var(--shadow-sm);
 }
 
 .action-item.danger {
-  background: rgba(239, 68, 68, 0.1);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.05) 0%, rgba(239, 68, 68, 0.1) 100%);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.action-item.danger:hover {
+  border-color: #ef4444;
 }
 
 .action-info h4 {
   margin: 0 0 var(--spacing-xs) 0;
   color: var(--text-primary);
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
 }
 
 .action-info p {
   margin: 0;
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+/* 生成设置样式增强 */
+.settings-form :deep(.ant-form-item-label > label) {
+  font-weight: 500;
+}
+
+.settings-form :deep(.ant-slider-mark-text) {
+  font-size: 12px;
+}
+
+.settings-form :deep(.ant-radio-wrapper) {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  transition: all 0.2s;
+}
+
+.settings-form :deep(.ant-radio-wrapper:hover) {
+  background: var(--bg-primary);
+}
+
+.settings-form :deep(.ant-radio-wrapper-checked) {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .provider-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-page {
+    padding: 0 var(--spacing-md);
+  }
+}
+
+/* Tab 标签样式 */
+.tab-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.tab-icon {
+  font-size: 16px;
 }
 </style>

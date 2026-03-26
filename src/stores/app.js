@@ -15,6 +15,11 @@ export const useAppStore = defineStore('app', () => {
     deepseekModel: 'deepseek-chat',
     doubaoModel: 'doubao-pro-32k-chat',
     timeout: 1200000,
+    // 字数补偿配置
+    wordCountCompensation: true,      // 是否启用字数补偿
+    compensationThreshold: 0.8,        // 触发补偿的阈值（目标字数的百分比）
+    maxExpandAttempts: 2,              // 最大扩写尝试次数
+    expansionStrategy: 'paragraph',    // 扩写策略: 'paragraph' | 'whole'
   })
 
   const setCurrentNovel = (novel) => {
