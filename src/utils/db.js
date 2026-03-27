@@ -10,7 +10,8 @@ const db = new Dexie('NovelAIDB')
 // v5: 新增书签表、批注表
 // v6: 新增角色关系表
 // v7: 新增大纲表、剧情线表、大纲事件表
-db.version(7).stores({
+// v8: 新增后台任务表，章节表添加后处理状态字段
+db.version(8).stores({
   novels: '++id, title, createdAt, updatedAt',
   chapters: '++id, novelId, chapterNumber, createdAt, updatedAt',
   // 角色表：存储小说角色信息及动态状态
@@ -38,7 +39,9 @@ db.version(7).stores({
   // 剧情线表：存储主线/支线剧情
   plotLines: '++id, novelId, type, status, createdAt, updatedAt',
   // 大纲事件表：存储剧情线上的事件节点
-  outlineEvents: '++id, novelId, plotLineId, order, createdAt, updatedAt'
+  outlineEvents: '++id, novelId, plotLineId, order, createdAt, updatedAt',
+  // 后台任务表：存储所有静默任务
+  backgroundTasks: '++id, type, status, novelId, chapterId, createdAt, updatedAt'
 })
 
 export default db

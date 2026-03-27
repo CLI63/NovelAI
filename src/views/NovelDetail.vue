@@ -7,6 +7,7 @@ import { useChapter, useChapterExport } from '@/composables/useChapter'
 import { useCharacter } from '@/composables/useCharacter'
 import { useForeshadowing } from '@/composables/useForeshadowing'
 import { useGenerationQueue } from '@/composables/useGenerationQueue'
+import { usePlotBranch } from '@/composables/usePlotBranch'
 import PageHeader from '@/components/common/PageHeader.vue'
 import NovelInfo from '@/components/novel/NovelInfo.vue'
 import ChapterList from '@/components/chapter/ChapterList.vue'
@@ -54,6 +55,17 @@ const {
   taskStats
 } = useGenerationQueue()
 
+// 剧情分支管理
+const {
+  branches,
+  loading: branchesLoading,
+  loadBranches,
+  createBranch,
+  updateBranch,
+  deleteBranch,
+  mergeBranch
+} = usePlotBranch()
+
 const activeTab = ref('chapters')
 const characterViewMode = ref('cards') // 'cards' | 'graph'
 
@@ -87,6 +99,29 @@ const foreshadowingForm = ref({
   notes: ''
 })
 
+// 伏笔分页
+const foreshadowingPagination = ref({
+  current: 1,
+  pageSize: 10,
+  showSizeChanger: true,
+  showQuickJumper: true,
+  pageSizeOptions: ['10', '20', '50'],
+  showTotal: (total) => `共 ${total} 条`
+})
+
+// 伏笔分页数据
+const paginatedForeshadowingList = computed(() => {
+  const start = (foreshadowingPagination.value.current - 1) * foreshadowingPagination.value.pageSize
+  const end = start + foreshadowingPagination.value.pageSize
+  return foreshadowingList.value.slice(start, end)
+})
+
+// 伏笔分页变化处理
+const handleForeshadowingPageChange = (page, pageSize) => {
+  foreshadowingPagination.value.current = page
+  foreshadowingPagination.value.pageSize = pageSize
+}
+
 // 加载数据
 const loadData = async () => {
   const id = parseInt(route.params.id)
@@ -96,7 +131,8 @@ const loadData = async () => {
       loadChapters(novel.value.id),
       loadCharacters(novel.value.id),
       loadForeshadowing(novel.value.id),
-      loadTasks(novel.value.id)
+      loadTasks(novel.value.id),
+      loadBranches(novel.value.id)
     ])
   }
 }
@@ -207,6 +243,13 @@ const handleDeleteCharacterConfirm = (character) => {
   })
 }
 
+// ============ 辅助方法 ============
+const getChapterTitle = (chapterId) => {
+  if (!chapterId) return ''
+  const chapter = chapters.value.find(c => c.id === chapterId)
+  return chapter ? chapter.title : `章节 ${chapterId}`
+}
+
 // ============ 伏笔管理方法 ============
 const openForeshadowingModal = (foreshadowing = null) => {
   if (foreshadowing) {
@@ -301,6 +344,73 @@ const handleCancelTask = async (taskId) => {
       await cancelTask(taskId)
       message.success('任务已取消')
       loadTasks(novel.value.id)
+    }
+  })
+}
+
+// ============ 剧情分支方法 ============
+const branchModalVisible = ref(false)
+const editingBranch = ref(null)
+const branchForm = ref({
+  name: '',
+  type: 'sub',
+  description: '',
+  status: 'active'
+})
+
+const handleCreateBranch = () => {
+  editingBranch.value = null
+  branchForm.value = {
+    name: '',
+    type: 'sub',
+    description: '',
+    status: 'active'
+  }
+  branchModalVisible.value = true
+}
+
+const handleEditBranch = (branch) => {
+  editingBranch.value = branch
+  branchForm.value = {
+    name: branch.name,
+    type: branch.type,
+    description: branch.description,
+    status: branch.status
+  }
+  branchModalVisible.value = true
+}
+
+const handleSaveBranch = async () => {
+  if (!branchForm.value.name) {
+    message.warning('请输入分支名称')
+    return
+  }
+  
+  if (editingBranch.value) {
+    await updateBranch(editingBranch.value.id, branchForm.value)
+    message.success('分支已更新')
+  } else {
+    await createBranch({
+      ...branchForm.value,
+      novelId: novel.value.id
+    })
+    message.success('分支已创建')
+  }
+  
+  branchModalVisible.value = false
+  loadBranches(novel.value.id)
+}
+
+const handleDeleteBranch = (branchId) => {
+  Modal.confirm({
+    title: '确认删除',
+    content: '确定要删除这个剧情分支吗？',
+    okText: '删除',
+    okType: 'danger',
+    onOk: async () => {
+      await deleteBranch(branchId)
+      message.success('分支已删除')
+      loadBranches(novel.value.id)
     }
   })
 }
@@ -520,50 +630,78 @@ onMounted(() => {
                 <div v-if="foreshadowingList.length === 0" class="empty-state">
                   <a-empty description="暂无伏笔，点击上方按钮添加" />
                 </div>
-                <div v-else class="foreshadowing-list">
-                  <a-card 
-                    v-for="item in foreshadowingList" 
-                    :key="item.id" 
-                    class="foreshadowing-card"
-                    :class="{ 'foreshadowing-resolved': item.status === 'resolved' }"
-                    size="small"
-                  >
-                    <template #title>
-                      <div class="foreshadowing-title">
-                        <span>{{ item.content }}</span>
+                <div v-else>
+                  <div class="foreshadowing-list">
+                    <a-card
+                      v-for="item in paginatedForeshadowingList"
+                      :key="item.id"
+                      class="foreshadowing-card"
+                      :class="{ 'foreshadowing-resolved': item.status === 'resolved' }"
+                      size="small"
+                    >
+                      <template #title>
+                        <div class="foreshadowing-title">
+                          <span>{{ item.content }}</span>
+                          <a-space>
+                            <a-tag :color="importanceMap[item.importance]?.color">
+                              {{ importanceMap[item.importance]?.text }}优先级
+                            </a-tag>
+                            <a-tag :color="item.status === 'resolved' ? 'success' : 'warning'">
+                              {{ item.status === 'resolved' ? '已回收' : '待回收' }}
+                            </a-tag>
+                          </a-space>
+                        </div>
+                      </template>
+                      <template #extra>
                         <a-space>
-                          <a-tag :color="importanceMap[item.importance]?.color">
-                            {{ importanceMap[item.importance]?.text }}优先级
-                          </a-tag>
-                          <a-tag :color="item.status === 'resolved' ? 'success' : 'warning'">
-                            {{ item.status === 'resolved' ? '已回收' : '待回收' }}
-                          </a-tag>
+                          <a-button
+                            v-if="item.status === 'pending'"
+                            type="link"
+                            size="small"
+                            @click="handleResolveForeshadowing(item)"
+                          >
+                            标记回收
+                          </a-button>
+                          <a-button type="link" size="small" @click="openForeshadowingModal(item)">
+                            编辑
+                          </a-button>
+                          <a-button type="link" size="small" danger @click="handleDeleteForeshadowingConfirm(item)">
+                            删除
+                          </a-button>
                         </a-space>
+                      </template>
+                      
+                      <div class="foreshadowing-meta">
+                        <span v-if="item.chapterId" class="foreshadowing-chapter">
+                          <strong>产生章节：</strong>
+                          <a-button type="link" size="small" @click="goToChapter({ id: item.chapterId })">
+                            {{ getChapterTitle(item.chapterId) }}
+                          </a-button>
+                        </span>
+                        <span v-if="item.resolvedIn" class="foreshadowing-resolved-chapter">
+                          <strong>回收章节：</strong>
+                          <a-button type="link" size="small" @click="goToChapter({ id: item.resolvedIn })">
+                            {{ getChapterTitle(item.resolvedIn) }}
+                          </a-button>
+                        </span>
                       </div>
-                    </template>
-                    <template #extra>
-                      <a-space>
-                        <a-button 
-                          v-if="item.status === 'pending'"
-                          type="link" 
-                          size="small" 
-                          @click="handleResolveForeshadowing(item)"
-                        >
-                          标记回收
-                        </a-button>
-                        <a-button type="link" size="small" @click="openForeshadowingModal(item)">
-                          编辑
-                        </a-button>
-                        <a-button type="link" size="small" danger @click="handleDeleteForeshadowingConfirm(item)">
-                          删除
-                        </a-button>
-                      </a-space>
-                    </template>
-                    
-                    <p v-if="item.notes" class="foreshadowing-notes">
-                      <strong>备注：</strong>{{ item.notes }}
-                    </p>
-                  </a-card>
+                      <p v-if="item.notes" class="foreshadowing-notes">
+                        <strong>备注：</strong>{{ item.notes }}
+                      </p>
+                    </a-card>
+                  </div>
+                  <div class="pagination-container">
+                    <a-pagination
+                      v-model:current="foreshadowingPagination.current"
+                      v-model:pageSize="foreshadowingPagination.pageSize"
+                      :total="foreshadowingList.length"
+                      :showSizeChanger="foreshadowingPagination.showSizeChanger"
+                      :showQuickJumper="foreshadowingPagination.showQuickJumper"
+                      :pageSizeOptions="foreshadowingPagination.pageSizeOptions"
+                      :showTotal="foreshadowingPagination.showTotal"
+                      @change="handleForeshadowingPageChange"
+                    />
+                  </div>
                 </div>
               </a-spin>
             </a-tab-pane>
@@ -642,6 +780,72 @@ onMounted(() => {
                 </div>
               </a-spin>
             </a-tab-pane>
+
+            <!-- 剧情分支 -->
+            <a-tab-pane key="branches">
+              <template #tab>
+                <span>
+                  <span class="tab-icon">🌳</span>
+                  剧情分支
+                </span>
+              </template>
+              
+              <a-spin :spinning="branchesLoading">
+                <div class="branches-section">
+                  <!-- 分支列表 -->
+                  <div class="branch-list">
+                    <a-card
+                      v-for="branch in branches"
+                      :key="branch.id"
+                      class="branch-card"
+                      :class="{ 'main-branch': branch.type === 'main' }"
+                    >
+                      <template #title>
+                        <div class="branch-header">
+                          <span class="branch-name">
+                            <a-tag :color="branch.type === 'main' ? 'blue' : 'green'">
+                              {{ branch.type === 'main' ? '主线' : '支线' }}
+                            </a-tag>
+                            {{ branch.name }}
+                          </span>
+                          <a-tag v-if="branch.status === 'active'" color="processing">进行中</a-tag>
+                          <a-tag v-else-if="branch.status === 'ended'" color="default">已结束</a-tag>
+                          <a-tag v-else-if="branch.status === 'merged'" color="success">已合并</a-tag>
+                        </div>
+                      </template>
+                      
+                      <p class="branch-description">{{ branch.description || '暂无描述' }}</p>
+                      
+                      <div class="branch-meta">
+                        <span v-if="branch.chapters?.length">
+                          关联章节：第 {{ branch.chapters.join('、') }} 章
+                        </span>
+                      </div>
+                      
+                      <div class="branch-actions">
+                        <a-button size="small" @click="handleEditBranch(branch)">编辑</a-button>
+                        <a-button
+                          v-if="branch.type !== 'main'"
+                          size="small"
+                          danger
+                          @click="handleDeleteBranch(branch.id)"
+                        >
+                          删除
+                        </a-button>
+                      </div>
+                    </a-card>
+                  </div>
+                  
+                  <!-- 添加分支按钮 -->
+                  <a-button type="dashed" block @click="handleCreateBranch">
+                    <template #icon>
+                      <span>➕</span>
+                    </template>
+                    添加剧情分支
+                  </a-button>
+                </div>
+              </a-spin>
+            </a-tab-pane>
           </a-tabs>
         </a-card>
       </template>
@@ -704,6 +908,36 @@ onMounted(() => {
         </a-form-item>
         <a-form-item label="备注">
           <a-textarea v-model:value="foreshadowingForm.notes" placeholder="备注信息" :rows="2" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <!-- 剧情分支编辑弹窗 -->
+    <a-modal
+      v-model:open="branchModalVisible"
+      :title="editingBranch ? '编辑剧情分支' : '添加剧情分支'"
+      @ok="handleSaveBranch"
+      :confirmLoading="branchesLoading"
+    >
+      <a-form :label-col="{ span: 4 }" :wrapper-col="{ span: 20 }">
+        <a-form-item label="分支名称" required>
+          <a-input v-model:value="branchForm.name" placeholder="请输入分支名称" />
+        </a-form-item>
+        <a-form-item label="类型">
+          <a-radio-group v-model:value="branchForm.type">
+            <a-radio value="main">主线</a-radio>
+            <a-radio value="sub">支线</a-radio>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item label="描述">
+          <a-textarea v-model:value="branchForm.description" placeholder="分支剧情描述" :rows="3" />
+        </a-form-item>
+        <a-form-item label="状态">
+          <a-select v-model:value="branchForm.status">
+            <a-select-option value="active">进行中</a-select-option>
+            <a-select-option value="ended">已结束</a-select-option>
+            <a-select-option value="merged">已合并</a-select-option>
+          </a-select>
         </a-form-item>
       </a-form>
     </a-modal>
@@ -838,6 +1072,27 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
+.foreshadowing-meta {
+  display: flex;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.foreshadowing-meta span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.foreshadowing-meta .ant-btn-link {
+  padding: 0 4px;
+  height: auto;
+  font-size: 13px;
+}
+
 .foreshadowing-notes {
   margin: 0;
   font-size: 13px;
@@ -850,6 +1105,14 @@ onMounted(() => {
 .foreshadowing-stats {
   display: flex;
   gap: var(--spacing-sm);
+}
+
+.pagination-container {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--spacing-lg);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border-color);
 }
 
 /* 任务卡片样式 */
@@ -910,6 +1173,61 @@ onMounted(() => {
   border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--bg-secondary);
+}
+
+/* 剧情分支样式 */
+.branches-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.branch-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.branch-card {
+  border-left: 4px solid var(--primary-color);
+  transition: all 0.3s;
+}
+
+.branch-card.main-branch {
+  border-left-color: #1890ff;
+}
+
+.branch-card:hover {
+  box-shadow: var(--shadow-sm);
+}
+
+.branch-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.branch-name {
+  font-weight: 600;
+}
+
+.branch-description {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin: var(--spacing-sm) 0;
+}
+
+.branch-meta {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-bottom: var(--spacing-sm);
+}
+
+.branch-actions {
+  display: flex;
+  gap: var(--spacing-xs);
+  margin-top: var(--spacing-sm);
 }
 
 /* 模态框样式 */

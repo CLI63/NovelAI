@@ -717,6 +717,14 @@ export const plotLineDao = {
       .sortBy('createdAt')
   },
 
+  async getMainPlotLine(novelId) {
+    return await db.plotLines
+      .where('novelId')
+      .equals(novelId)
+      .and(p => p.type === 'main')
+      .first()
+  },
+
   async getSubPlotLines(novelId) {
     return await db.plotLines
       .where('novelId')

@@ -26,6 +26,10 @@ const props = defineProps({
     type: Number,
     default: 2000,
   },
+  saving: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['stop', 'save'])
@@ -179,9 +183,11 @@ const isWordCountMet = () => {
         <a-button
           v-else-if="content"
           type="primary"
+          :loading="saving"
+          :disabled="saving"
           @click="handleSave"
         >
-          保存章节
+          {{ saving ? '保存中...' : '保存章节' }}
         </a-button>
       </div>
     </div>

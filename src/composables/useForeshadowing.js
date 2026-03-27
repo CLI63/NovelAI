@@ -554,6 +554,196 @@ export function useForeshadowing() {
     }
   })
 
+  /**
+   * 从小说概览中提取潜在伏笔
+   * @param {number} novelId - 小说ID
+   * @param {Object} plotLines - 剧情线信息
+   * @param {Array} outline - 大纲信息
+   * @returns {Promise<number>} 创建的伏笔数量
+   */
+  const extractFromNovelOverview = async (novelId, plotLines, outline) => {
+    try {
+      const foreshadowings = []
+
+      // 从主线剧情中提取潜在伏笔
+      if (plotLines?.main) {
+        const mainForeshadowings = analyzePlotForForeshadowing(plotLines.main, 'main')
+        foreshadowings.push(...mainForeshadowings)
+      }
+
+      // 从支线剧情中提取
+      if (plotLines?.sub?.length) {
+        for (const subPlot of plotLines.sub) {
+          const subForeshadowings = analyzePlotForForeshadowing(subPlot, 'sub')
+          foreshadowings.push(...subForeshadowings)
+        }
+      }
+
+      // 从大纲中提取
+      if (outline?.length) {
+        for (const volume of outline) {
+          if (volume.summary) {
+            const volumeForeshadowings = analyzePlotForForeshadowing(volume.summary, 'outline')
+            foreshadowings.push(...volumeForeshadowings)
+          }
+        }
+      }
+
+      // 保存提取的伏笔
+      const saved = []
+      for (const fs of foreshadowings) {
+        const id = await foreshadowingDao.add({
+          novelId,
+          content: fs.content,
+          type: fs.type || 'plot',
+          importance: fs.importance || 'medium',
+          description: fs.description || '',
+          relatedCharacters: fs.relatedCharacters || [],
+          status: 'pending',
+          source: 'overview'
+        })
+        saved.push(id)
+      }
+
+      return saved.length
+    } catch (err) {
+      console.error('从概览提取伏笔失败:', err)
+      return 0
+    }
+  }
+
+  /**
+   * 分析剧情文本，提取潜在伏笔
+   * @param {string} plotText - 剧情文本
+   * @param {string} source - 来源类型 (main/sub/outline)
+   * @returns {Array} 提取的伏笔数组
+   */
+  const analyzePlotForForeshadowing = (plotText, source) => {
+    const foreshadowings = []
+    
+    if (!plotText || typeof plotText !== 'string') {
+      return foreshadowings
+    }
+
+    // 伏笔关键词模式
+    const patterns = [
+      // 神秘物品/人物
+      { regex: /神秘[的人物事]/g, type: 'mystery', importance: 'high' },
+      { regex: /未知[的的]/g, type: 'mystery', importance: 'medium' },
+      { regex: /传说[中的]/g, type: 'mystery', importance: 'medium' },
+      // 预示/暗示
+      { regex: /似乎|仿佛|隐约/g, type: 'hint', importance: 'low' },
+      // 未解之谜
+      { regex: /谜团|秘密|真相/g, type: 'mystery', importance: 'high' },
+      // 重要承诺/誓言
+      { regex: /誓言|承诺|约定/g, type: 'promise', importance: 'medium' },
+      // 宿命/命运
+      { regex: /宿命|命运|注定/g, type: 'fate', importance: 'high' },
+      // 隐藏身份
+      { regex: /隐藏|伪装|身份/g, type: 'identity', importance: 'high' },
+      // 复仇
+      { regex: /复仇|报仇|仇恨/g, type: 'revenge', importance: 'medium' },
+      // 宝物/传承
+      { regex: /宝物|传承|遗物/g, type: 'treasure', importance: 'medium' }
+    ]
+
+    // 按句子分割
+    const sentences = plotText.split(/[。！？；\n]/).filter(s => s.trim())
+    
+    for (const sentence of sentences) {
+      for (const pattern of patterns) {
+        if (pattern.regex.test(sentence)) {
+          // 避免重复
+          const exists = foreshadowings.some(f => f.content === sentence.trim())
+          if (!exists && sentence.trim().length > 5) {
+            foreshadowings.push({
+              content: sentence.trim(),
+              type: pattern.type,
+              importance: pattern.importance,
+              description: `从${source === 'main' ? '主线剧情' : source === 'sub' ? '支线剧情' : '大纲'}中自动提取`,
+              relatedCharacters: []
+            })
+          }
+          break // 一个句子只匹配一个模式
+        }
+      }
+    }
+
+    return foreshadowings
+  }
+
+  /**
+   * 检查章节内容中的伏笔回收情况
+   * @param {string} content - 章节内容
+   * @param {number} novelId - 小说ID
+   * @param {number} chapterId - 章节ID
+   * @returns {Promise<Array>} 已回收的伏笔列表
+   */
+  const checkForeshadowingResolution = async (content, novelId, chapterId) => {
+    try {
+      // 获取所有待回收的伏笔
+      const pendingForeshadowings = await foreshadowingDao.getPending(novelId)
+      
+      if (!pendingForeshadowings.length) {
+        return []
+      }
+
+      const resolved = []
+      
+      for (const fs of pendingForeshadowings) {
+        // 跳过在本章节埋设的伏笔（避免同章回收）
+        if (fs.chapterId === chapterId) {
+          continue
+        }
+        
+        // 检查伏笔内容是否在章节中被回应/解决
+        const keywords = fs.keywords || extractKeywords(fs.content)
+        let matchCount = 0
+        
+        for (const keyword of keywords) {
+          if (content.includes(keyword)) {
+            matchCount++
+          }
+        }
+
+        // 如果关键词匹配度超过50%，认为伏笔已回收
+        if (keywords.length > 0 && matchCount / keywords.length >= 0.5) {
+          await foreshadowingDao.markResolved(fs.id, chapterId)
+          resolved.push(fs)
+        }
+      }
+
+      return resolved
+    } catch (err) {
+      console.error('检查伏笔回收失败:', err)
+      return []
+    }
+  }
+
+  /**
+   * 从文本中提取关键词
+   * @param {string} text - 文本内容
+   * @returns {Array} 关键词数组
+   */
+  const extractKeywords = (text) => {
+    if (!text || typeof text !== 'string') return []
+    
+    // 简单的关键词提取：提取2-4字的词语
+    const keywords = []
+    const words = text.match(/[\u4e00-\u9fa5]{2,4}/g) || []
+    
+    // 过滤常见无意义词
+    const stopWords = ['这是', '那是', '他的', '她的', '我的', '这个', '那个', '但是', '因为', '所以', '如果', '虽然']
+    
+    for (const word of words) {
+      if (!stopWords.includes(word) && !keywords.includes(word)) {
+        keywords.push(word)
+      }
+    }
+    
+    return keywords.slice(0, 5) // 最多返回5个关键词
+  }
+
   return {
     foreshadowings,
     loading,
@@ -571,6 +761,8 @@ export function useForeshadowing() {
     getHighImportancePending,
     getForeshadowingSummary,
     extractFromChapter,
+    extractFromNovelOverview,
+    checkForeshadowingResolution,
     analyzeForeshadowingRelations,
     checkForeshadowingWarnings,
     getForeshadowingContextForGeneration

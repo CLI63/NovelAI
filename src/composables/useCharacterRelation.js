@@ -220,6 +220,160 @@ export function useCharacterRelation() {
     return stats
   })
 
+  /**
+   * 从小说概览中提取并创建角色关系
+   * @param {number} novelId - 小说ID
+   * @param {Object} characters - 小说概览中的角色信息
+   * @returns {Promise<number>} 创建的关系数量
+   */
+  const createRelationsFromNovelOverview = async (novelId, characters) => {
+    try {
+      if (!characters) return 0
+
+      // 获取已创建的角色列表
+      const createdCharacters = await characterDao.getByNovelId(novelId)
+      if (!createdCharacters.length) return 0
+
+      const relations = []
+      const characterMap = new Map()
+      
+      // 建立角色名称到ID的映射
+      createdCharacters.forEach(char => {
+        characterMap.set(char.name, char.id)
+      })
+
+      // 分析主角与配角之间的关系
+      if (characters.protagonist && characters.supportingCharacters) {
+        const protagonistName = characters.protagonist.name
+        const protagonistId = characterMap.get(protagonistName)
+
+        if (protagonistId) {
+          for (const supporting of characters.supportingCharacters) {
+            const supportingId = characterMap.get(supporting.name)
+            
+            if (supportingId) {
+              // 从角色定位分析关系类型
+              const relationType = analyzeRelationType(supporting.role)
+              
+              if (relationType) {
+                relations.push({
+                  novelId,
+                  sourceId: protagonistId,
+                  targetId: supportingId,
+                  type: relationType,
+                  description: supporting.role || '',
+                  strength: 'medium',
+                  direction: 'bidirectional'
+                })
+              }
+            }
+          }
+        }
+      }
+
+      // 分析配角之间的关系（如果有描述）
+      if (characters.supportingCharacters && characters.supportingCharacters.length > 1) {
+        for (let i = 0; i < characters.supportingCharacters.length; i++) {
+          for (let j = i + 1; j < characters.supportingCharacters.length; j++) {
+            const char1 = characters.supportingCharacters[i]
+            const char2 = characters.supportingCharacters[j]
+            
+            // 检查是否有共同的关键词暗示关系
+            const relationType = analyzeRelationBetweenCharacters(char1, char2)
+            
+            if (relationType) {
+              const id1 = characterMap.get(char1.name)
+              const id2 = characterMap.get(char2.name)
+              
+              if (id1 && id2) {
+                relations.push({
+                  novelId,
+                  sourceId: id1,
+                  targetId: id2,
+                  type: relationType,
+                  description: '',
+                  strength: 'medium',
+                  direction: 'bidirectional'
+                })
+              }
+            }
+          }
+        }
+      }
+
+      // 批量创建关系
+      if (relations.length > 0) {
+        await characterRelationDao.batchAdd(relations)
+      }
+
+      return relations.length
+    } catch (err) {
+      console.error('从概览创建角色关系失败:', err)
+      return 0
+    }
+  }
+
+  /**
+   * 分析角色定位，判断与主角的关系类型
+   * @param {string} role - 角色定位描述
+   * @returns {string|null} 关系类型
+   */
+  const analyzeRelationType = (role) => {
+    if (!role || typeof role !== 'string') return null
+
+    const roleLower = role.toLowerCase()
+
+    // 关系关键词映射
+    const relationPatterns = [
+      { patterns: ['朋友', '挚友', '好友', '伙伴', '同伴'], type: 'friend' },
+      { patterns: ['敌人', '对手', '仇人', '反派'], type: 'enemy' },
+      { patterns: ['恋人', '爱人', '情侣', '妻子', '丈夫', '女友', '男友'], type: 'lover' },
+      { patterns: ['师父', '师傅', '老师', '导师', '师尊'], type: 'mentor' },
+      { patterns: ['徒弟', '弟子', '学生', '门徒'], type: 'mentor' },
+      { patterns: ['家人', '父亲', '母亲', '兄弟', '姐妹', '儿子', '女儿', '父母'], type: 'family' },
+      { patterns: ['竞争对手', '竞争者', '宿敌'], type: 'rival' },
+      { patterns: ['盟友', '同盟', '合作'], type: 'ally' },
+      { patterns: ['下属', '部下', '随从', '仆人'], type: 'subordinate' },
+      { patterns: ['上司', '领导', '老板', '主人'], type: 'subordinate' }
+    ]
+
+    for (const { patterns, type } of relationPatterns) {
+      for (const pattern of patterns) {
+        if (roleLower.includes(pattern)) {
+          return type
+        }
+      }
+    }
+
+    // 默认关系类型
+    return 'other'
+  }
+
+  /**
+   * 分析两个配角之间的关系
+   * @param {Object} char1 - 角色1
+   * @param {Object} char2 - 角色2
+   * @returns {string|null} 关系类型
+   */
+  const analyzeRelationBetweenCharacters = (char1, char2) => {
+    // 简单的关系分析：检查身份关键词
+    const identity1 = (char1.identity || '').toLowerCase()
+    const identity2 = (char2.identity || '').toLowerCase()
+    
+    // 师徒关系
+    if ((identity1.includes('师') && identity2.includes('徒')) ||
+        (identity1.includes('徒') && identity2.includes('师'))) {
+      return 'mentor'
+    }
+    
+    // 家族关系
+    if (identity1.includes('家族') && identity2.includes('家族')) {
+      return 'family'
+    }
+
+    return null
+  }
+
   return {
     relations,
     loading,
@@ -230,6 +384,7 @@ export function useCharacterRelation() {
     updateRelation,
     deleteRelation,
     batchCreateRelations,
+    createRelationsFromNovelOverview,
     generateGraphData,
     getCharacterRelations
   }

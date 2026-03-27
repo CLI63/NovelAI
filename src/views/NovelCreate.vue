@@ -4,6 +4,9 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useNovel } from '@/composables/useNovel'
 import { useAI } from '@/composables/useAI'
+import { useCharacter } from '@/composables/useCharacter'
+import { useForeshadowing } from '@/composables/useForeshadowing'
+import { useCharacterRelation } from '@/composables/useCharacterRelation'
 import { buildNovelOverviewPrompt } from '@/utils/prompts'
 import PageHeader from '@/components/common/PageHeader.vue'
 import NovelForm from '@/components/novel/NovelForm.vue'
@@ -121,6 +124,34 @@ const handleSave = async () => {
 
   const id = await createNovel(novel)
   if (id) {
+    // 自动创建角色
+    const { createFromNovelOverview } = useCharacter()
+    const characterCount = await createFromNovelOverview(id, generatedOverview.value)
+    if (characterCount > 0) {
+      message.success(`已自动创建 ${characterCount} 个角色`)
+    }
+
+    // 从概览中提取潜在伏笔
+    const { extractFromNovelOverview } = useForeshadowing()
+    const foreshadowingCount = await extractFromNovelOverview(
+      id,
+      generatedOverview.value.plotLines,
+      generatedOverview.value.outline
+    )
+    if (foreshadowingCount > 0) {
+      message.success(`已从概览中提取 ${foreshadowingCount} 个潜在伏笔`)
+    }
+
+    // 提取角色关系
+    const { createRelationsFromNovelOverview } = useCharacterRelation()
+    const relationCount = await createRelationsFromNovelOverview(
+      id,
+      generatedOverview.value.characters
+    )
+    if (relationCount > 0) {
+      message.success(`已自动创建 ${relationCount} 个角色关系`)
+    }
+
     router.push(`/novel/${id}`)
   }
 }

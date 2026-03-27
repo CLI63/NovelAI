@@ -751,6 +751,135 @@ export function useOutline() {
     }
   })
 
+  /**
+   * 从章节内容中记录时间线事件
+   * @param {string} content - 章节内容
+   * @param {number} chapterId - 章节ID
+   * @param {number} novelId - 小说ID
+   * @returns {Promise<number>} 创建的事件数量
+   */
+  const recordTimelineEvents = async (content, chapterId, novelId) => {
+    try {
+      // 获取章节信息
+      const chapter = await chapterDao.getById(chapterId)
+      if (!chapter) return 0
+
+      // 获取或创建主线剧情线
+      let mainPlotLine = await plotLineDao.getMainPlotLine(novelId)
+      if (!mainPlotLine) {
+        // 创建主线
+        const plotLineId = await plotLineDao.add({
+          novelId,
+          name: '主线剧情',
+          type: 'main',
+          description: '小说主线剧情',
+          color: '#1890ff',
+          order: 0
+        })
+        mainPlotLine = await plotLineDao.getById(plotLineId)
+      }
+
+      // 从内容中提取时间线事件
+      const timelineEvents = extractTimelineEvents(content, chapter.chapterNumber)
+      
+      // 保存事件
+      let createdCount = 0
+      for (const event of timelineEvents) {
+        await outlineEventDao.add({
+          plotLineId: mainPlotLine.id,
+          chapterId,
+          title: event.title,
+          description: event.description,
+          type: event.type,
+          importance: event.importance,
+          relatedCharacters: event.relatedCharacters || [],
+          location: event.location || '',
+          chapterNumber: chapter.chapterNumber,
+          order: createdCount
+        })
+        createdCount++
+      }
+
+      return createdCount
+    } catch (err) {
+      console.error('记录时间线事件失败:', err)
+      return 0
+    }
+  }
+
+  /**
+   * 从章节内容中提取时间线事件
+   * @param {string} content - 章节内容
+   * @param {number} chapterNumber - 章节号
+   * @returns {Array} 事件列表
+   */
+  const extractTimelineEvents = (content, chapterNumber) => {
+    const events = []
+    const sentences = content.split(/[。！？\n]/)
+    
+    // 事件关键词模式
+    const eventPatterns = [
+      // 战斗事件
+      { regex: /战斗|打斗|交手|对决|厮杀/, type: 'battle', importance: 'high' },
+      // 死亡事件
+      { regex: /死亡|牺牲|陨落|身亡|去世/, type: 'death', importance: 'high' },
+      // 突破事件
+      { regex: /突破|晋升|进阶|觉醒/, type: 'breakthrough', importance: 'high' },
+      // 获得物品
+      { regex: /获得|得到|收获|取得/, type: 'acquisition', importance: 'medium' },
+      // 相遇事件
+      { regex: /相遇|邂逅|重逢|初见/, type: 'meeting', importance: 'medium' },
+      // 离别事件
+      { regex: /离别|分别|告别|离开/, type: 'departure', importance: 'medium' },
+      // 发现事件
+      { regex: /发现|察觉|探知|找到/, type: 'discovery', importance: 'medium' },
+      // 决定事件
+      { regex: /决定|决心|立志|发誓/, type: 'decision', importance: 'medium' },
+      // 秘密揭露
+      { regex: /秘密|真相|揭露|暴露/, type: 'revelation', importance: 'high' }
+    ]
+
+    for (const sentence of sentences) {
+      const trimmed = sentence.trim()
+      if (trimmed.length < 10 || trimmed.length > 100) continue
+
+      for (const { regex, type, importance } of eventPatterns) {
+        if (regex.test(trimmed)) {
+          // 提取涉及的角色名（简单匹配）
+          const relatedCharacters = extractCharacterNames(trimmed)
+          
+          events.push({
+            title: trimmed.slice(0, 30) + (trimmed.length > 30 ? '...' : ''),
+            description: trimmed,
+            type,
+            importance,
+            relatedCharacters
+          })
+          break // 一个句子只匹配一个事件类型
+        }
+      }
+    }
+
+    // 限制事件数量，最多返回10个
+    return events.slice(0, 10)
+  }
+
+  /**
+   * 从文本中提取角色名
+   * @param {string} text - 文本内容
+   * @returns {Array} 角色名列表
+   */
+  const extractCharacterNames = (text) => {
+    // 简单的中文姓名匹配（2-4个字）
+    const namePattern = /[\u4e00-\u9fa5]{2,4}/g
+    const matches = text.match(namePattern) || []
+    
+    // 过滤常见非人名词汇
+    const stopWords = ['但是', '因为', '所以', '如果', '虽然', '然后', '接着', '于是', '突然', '正在', '已经', '还是', '只是', '这个', '那个', '什么', '怎么', '为什么']
+    
+    return matches.filter(name => !stopWords.includes(name)).slice(0, 3)
+  }
+
   return {
     // 状态
     outline,
@@ -791,6 +920,9 @@ export function useOutline() {
     // AI辅助
     generateOutlineWithAI,
     suggestPlotEvents,
+
+    // 时间线记录
+    recordTimelineEvents,
 
     // 统计
     getOutlineStats

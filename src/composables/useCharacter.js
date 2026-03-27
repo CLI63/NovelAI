@@ -289,6 +289,164 @@ export function useCharacter() {
     return characters.value.find(c => c.type === 'protagonist') || null
   })
 
+  /**
+   * 从章节内容中更新角色出场记录
+   * @param {string} content - 章节内容
+   * @param {number} chapterId - 章节ID
+   * @param {number} novelId - 小说ID
+   * @returns {Promise<Array>} 出场的角色列表
+   */
+  const updateAppearancesFromContent = async (content, chapterId, novelId) => {
+    try {
+      // 获取小说所有角色
+      const allCharacters = await characterDao.getByNovelId(novelId)
+      const appearedCharacters = []
+
+      for (const char of allCharacters) {
+        // 检查角色名是否在内容中出现
+        const nameRegex = new RegExp(char.name, 'g')
+        const matches = content.match(nameRegex)
+        
+        if (matches && matches.length > 0) {
+          // 提取角色在章节中的事件
+          const events = extractCharacterEvents(content, char.name)
+          
+          // 更新角色出场记录
+          await characterDao.addAppearance(char.id, chapterId, events)
+          
+          appearedCharacters.push({
+            id: char.id,
+            name: char.name,
+            appearanceCount: matches.length,
+            events
+          })
+        }
+      }
+
+      return appearedCharacters
+    } catch (err) {
+      console.error('更新角色出场记录失败:', err)
+      return []
+    }
+  }
+
+  /**
+   * 从章节内容中更新角色状态
+   * @param {string} content - 章节内容
+   * @param {number} chapterId - 章节ID
+   * @param {number} novelId - 小说ID
+   * @returns {Promise<boolean>} 是否成功
+   */
+  const updateStatusesFromContent = async (content, chapterId, novelId) => {
+    try {
+      // 获取小说所有角色
+      const allCharacters = await characterDao.getByNovelId(novelId)
+
+      for (const char of allCharacters) {
+        // 检查角色名是否在内容中出现
+        if (content.includes(char.name)) {
+          // 提取角色状态变化
+          const statusUpdate = extractCharacterStatus(content, char)
+          
+          if (statusUpdate) {
+            await characterDao.updateStatus(char.id, statusUpdate)
+          }
+        }
+      }
+
+      return true
+    } catch (err) {
+      console.error('更新角色状态失败:', err)
+      return false
+    }
+  }
+
+  /**
+   * 提取角色在章节中的事件
+   * @param {string} content - 章节内容
+   * @param {string} characterName - 角色名
+   * @returns {Array} 事件列表
+   */
+  const extractCharacterEvents = (content, characterName) => {
+    const events = []
+    const sentences = content.split(/[。！？\n]/)
+    
+    for (const sentence of sentences) {
+      if (sentence.includes(characterName)) {
+        // 简化事件描述
+        const trimmed = sentence.trim()
+        if (trimmed.length > 5 && trimmed.length < 100) {
+          events.push(trimmed)
+        }
+      }
+    }
+    
+    // 最多保留5个关键事件
+    return events.slice(0, 5)
+  }
+
+  /**
+   * 从内容中提取角色状态变化
+   * @param {string} content - 章节内容
+   * @param {Object} character - 角色对象
+   * @returns {Object|null} 状态更新对象
+   */
+  const extractCharacterStatus = (content, character) => {
+    const statusUpdate = {}
+    const charName = character.name
+    
+    // 检测位置变化
+    const locationPatterns = [
+      /来到[了]?([^，。！？]{2,10})/,
+      /到达[了]?([^，。！？]{2,10})/,
+      /出现在([^，。！？]{2,10})/,
+      /身处([^，。！？]{2,10})/
+    ]
+    
+    for (const pattern of locationPatterns) {
+      const regex = new RegExp(charName + pattern.source)
+      const match = content.match(regex)
+      if (match) {
+        statusUpdate.location = match[1]
+        break
+      }
+    }
+    
+    // 检测状态变化
+    const conditionPatterns = [
+      { regex: /受伤|负伤|重伤/, condition: '受伤' },
+      { regex: /恢复|痊愈|康复/, condition: '正常' },
+      { regex: /死亡|牺牲|陨落/, condition: '死亡' },
+      { regex: /突破|晋升|进阶/, condition: '突破' }
+    ]
+    
+    for (const { regex, condition } of conditionPatterns) {
+      const pattern = new RegExp(charName + regex.source)
+      if (pattern.test(content)) {
+        statusUpdate.condition = condition
+        break
+      }
+    }
+    
+    // 检测实力变化
+    const powerPatterns = [
+      /实力[大]?[增减]/,
+      /修为[大]?[增减]/,
+      /境界[提升降低]/
+    ]
+    
+    for (const pattern of powerPatterns) {
+      const regex = new RegExp(charName + pattern.source)
+      const match = content.match(regex)
+      if (match) {
+        statusUpdate.powerLevel = match[0]
+        break
+      }
+    }
+    
+    return Object.keys(statusUpdate).length > 0 ? statusUpdate : null
+  }
+
   return {
     characters,
     character,
@@ -305,6 +463,8 @@ export function useCharacter() {
     addAppearance,
     updateRelationship,
     createFromNovelOverview,
-    getCharacterStatusSummary
+    getCharacterStatusSummary,
+    updateAppearancesFromContent,
+    updateStatusesFromContent
   }
 }

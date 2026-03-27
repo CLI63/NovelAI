@@ -1,8 +1,9 @@
 <script setup>
 import { RouterView } from 'vue-router'
 import { useAppStore } from './stores/app'
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { message, Modal } from 'ant-design-vue'
 import {
   BookOutlined,
   BulbOutlined,
@@ -14,7 +15,9 @@ import {
   UserOutlined,
   BellOutlined,
   SearchOutlined,
+  ScheduleOutlined,
 } from '@ant-design/icons-vue'
+import { useBackgroundTask } from './composables/useBackgroundTask'
 
 const appStore = useAppStore()
 const router = useRouter()
@@ -25,10 +28,16 @@ const selectedKeys = ref(['/'])
 const searchVisible = ref(false)
 const searchText = ref('')
 
+// 后台任务相关
+const { getPendingTasks, TASK_STATUS } = useBackgroundTask()
+const showPendingModal = ref(false)
+const pendingTasksCount = ref(0)
+
 const menuItems = [
   { key: '/', icon: BookOutlined, label: '小说列表' },
   { key: '/inspiration', icon: BulbOutlined, label: '灵感工作台' },
   { key: '/tools', icon: ToolOutlined, label: '写作工具' },
+  { key: '/tasks', icon: ScheduleOutlined, label: '任务中心', badge: pendingTasksCount },
   { key: '/settings', icon: SettingOutlined, label: '设置' },
 ]
 
@@ -52,6 +61,40 @@ watch(
   },
   { immediate: true },
 )
+
+// 检查待处理任务
+const checkPendingTasks = async () => {
+  try {
+    const pendingTasks = await getPendingTasks()
+    pendingTasksCount.value = pendingTasks.length
+    
+    // 如果有待处理任务且不在任务中心页面，显示提示
+    if (pendingTasks.length > 0 && route.path !== '/tasks') {
+      showPendingModal.value = true
+    }
+  } catch (err) {
+    console.warn('检查待处理任务失败:', err)
+  }
+}
+
+// 跳转到任务中心
+const goToTaskCenter = () => {
+  showPendingModal.value = false
+  router.push('/tasks')
+}
+
+// 关闭提示
+const closePendingModal = () => {
+  showPendingModal.value = false
+}
+
+onMounted(() => {
+  // 应用启动时检查待处理任务
+  checkPendingTasks()
+  
+  // 定时检查（每5分钟）
+  setInterval(checkPendingTasks, 5 * 60 * 1000)
+})
 </script>
 
 <template>
@@ -185,6 +228,30 @@ watch(
         </div>
       </a-layout-content>
     </a-layout>
+
+    <!-- 待处理任务提示弹窗 -->
+    <a-modal
+      v-model:open="showPendingModal"
+      title="待处理任务提醒"
+      :closable="true"
+      :maskClosable="false"
+      @cancel="closePendingModal"
+    >
+      <div class="pending-task-modal-content">
+        <a-alert
+          type="info"
+          show-icon
+          :message="`您有 ${pendingTasksCount} 个待处理的后台任务`"
+          description="这些任务可能包括章节后处理（摘要、角色、伏笔、时间线等）。您可以前往任务中心查看详情并执行这些任务。"
+        />
+      </div>
+      <template #footer>
+        <a-button @click="closePendingModal">稍后处理</a-button>
+        <a-button type="primary" @click="goToTaskCenter">
+          前往任务中心
+        </a-button>
+      </template>
+    </a-modal>
   </a-layout>
 </template>
 
@@ -529,6 +596,11 @@ watch(
 
 :deep(.ant-layout-sider-children::-webkit-scrollbar-thumb:hover) {
   background: #94a3b8;
+}
+
+/* ==================== 待处理任务弹窗样式 ==================== */
+.pending-task-modal-content {
+  padding: 8px 0;
 }
 
 /* ==================== 响应式设计 ==================== */

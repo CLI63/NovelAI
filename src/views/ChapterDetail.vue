@@ -5,6 +5,11 @@ import { message } from 'ant-design-vue'
 import { useNovel } from '@/composables/useNovel'
 import { useChapter, useChapterExport } from '@/composables/useChapter'
 import { useAI } from '@/composables/useAI'
+import { useCoherenceScore } from '@/composables/useCoherenceScore'
+import { useStructuredSummary } from '@/composables/useStructuredSummary'
+import { useCharacter } from '@/composables/useCharacter'
+import { useForeshadowing } from '@/composables/useForeshadowing'
+import { useOutline } from '@/composables/useOutline'
 import { buildChapterRegenerationPrompt } from '@/utils/prompts'
 import PageHeader from '@/components/common/PageHeader.vue'
 
@@ -15,6 +20,16 @@ const { novel, loadNovel } = useNovel()
 const { chapter, chapters, loading: chapterLoading, loadChapter, loadChapters, updateChapter, deleteChapter, getPrevNextChapter } = useChapter()
 const { exportChapter } = useChapterExport()
 const { generate, loading: generating, checkApiKey } = useAI()
+
+// 连贯性评分
+const { scoring, scoreResult, suggestions, runCoherenceScore, scoringDimensions } = useCoherenceScore()
+
+// 结构化摘要
+const { generateStructuredSummary } = useStructuredSummary()
+
+// 后处理状态
+const postProcessing = ref(false)
+const postProcessResults = ref(null)
 
 const editing = ref(false)
 const feedback = ref('')
@@ -125,6 +140,153 @@ const handleBack = () => {
   router.push(`/novel/${novel.value.id}`)
 }
 
+// 执行连贯性评分
+const handleCoherenceScore = async () => {
+  if (!checkApiKey()) return
+  
+  // 获取上一章
+  const prevChapterNum = chapter.value.chapterNumber - 1
+  const prevChapterData = chapters.value?.find(c => c.chapterNumber === prevChapterNum)
+  
+  if (!prevChapterData) {
+    message.warning('没有上一章数据，无法进行连贯性评分')
+    return
+  }
+  
+  await runCoherenceScore(chapter.value, prevChapterData, novel.value, generate)
+}
+
+/**
+ * 重新触发章节后处理（摘要、伏笔、角色、时间线等）
+ */
+const handleReprocess = async () => {
+  if (!chapter.value || !novel.value) return
+  
+  postProcessing.value = true
+  postProcessResults.value = null
+  
+  const results = {
+    structuredSummary: { success: false, error: null },
+    foreshadowing: { success: false, error: null, count: 0 },
+    characterAppearance: { success: false, error: null, count: 0 },
+    characterStatus: { success: false, error: null },
+    foreshadowingResolution: { success: false, error: null, count: 0 },
+    timeline: { success: false, error: null, count: 0 },
+    characterChanges: { success: false, error: null, count: 0 },
+    newForeshadowing: { success: false, error: null, count: 0 }
+  }
+  
+  const novelId = novel.value.id
+  const chapterId = chapter.value.id
+  const content = chapter.value.content
+  const chapterNumber = chapter.value.chapterNumber
+
+  try {
+    // 1. 生成结构化摘要
+    try {
+      const structuredSummary = await generateStructuredSummary(
+        { content, chapterNumber },
+        novel.value,
+        generate
+      )
+      if (structuredSummary) {
+        results.structuredSummary.success = true
+        console.log('结构化摘要生成完成:', structuredSummary)
+      }
+    } catch (err) {
+      results.structuredSummary.error = err.message
+      console.warn('生成结构化摘要失败:', err)
+    }
+
+    // 2. 提取新伏笔
+    try {
+      const { extractFromChapter } = useForeshadowing()
+      const newForeshadowings = await extractFromChapter(content, chapterId, novelId)
+      if (newForeshadowings && newForeshadowings.length > 0) {
+        results.foreshadowing.success = true
+        results.foreshadowing.count = newForeshadowings.length
+      } else {
+        results.foreshadowing.success = true
+      }
+    } catch (err) {
+      results.foreshadowing.error = err.message
+      console.warn('提取伏笔失败:', err)
+    }
+
+    // 3. 更新角色出场记录
+    try {
+      const { updateAppearancesFromContent } = useCharacter()
+      const appearedCharacters = await updateAppearancesFromContent(content, chapterId, novelId)
+      if (appearedCharacters && appearedCharacters.length > 0) {
+        results.characterAppearance.success = true
+        results.characterAppearance.count = appearedCharacters.length
+      } else {
+        results.characterAppearance.success = true
+      }
+    } catch (err) {
+      results.characterAppearance.error = err.message
+      console.warn('更新角色出场记录失败:', err)
+    }
+
+    // 4. 更新角色状态
+    try {
+      const { updateStatusesFromContent } = useCharacter()
+      await updateStatusesFromContent(content, chapterId, novelId)
+      results.characterStatus.success = true
+    } catch (err) {
+      results.characterStatus.error = err.message
+      console.warn('更新角色状态失败:', err)
+    }
+
+    // 5. 检查伏笔回收
+    try {
+      const { checkForeshadowingResolution } = useForeshadowing()
+      const resolvedForeshadowings = await checkForeshadowingResolution(content, novelId, chapterId)
+      if (resolvedForeshadowings && resolvedForeshadowings.length > 0) {
+        results.foreshadowingResolution.success = true
+        results.foreshadowingResolution.count = resolvedForeshadowings.length
+      } else {
+        results.foreshadowingResolution.success = true
+      }
+    } catch (err) {
+      results.foreshadowingResolution.error = err.message
+      console.warn('检查伏笔回收失败:', err)
+    }
+
+    // 6. 记录时间线事件
+    try {
+      const { recordTimelineEvents } = useOutline()
+      const eventCount = await recordTimelineEvents(content, chapterId, novelId)
+      if (eventCount && eventCount > 0) {
+        results.timeline.success = true
+        results.timeline.count = eventCount
+      } else {
+        results.timeline.success = true
+      }
+    } catch (err) {
+      results.timeline.error = err.message
+      console.warn('记录时间线事件失败:', err)
+    }
+
+    postProcessResults.value = results
+    
+    // 统计成功/失败数量
+    const successCount = Object.values(results).filter(r => r.success).length
+    const failedCount = Object.values(results).filter(r => !r.success).length
+    
+    if (failedCount === 0) {
+      message.success(`后处理完成，全部 ${successCount} 项成功`)
+    } else {
+      message.warning(`后处理完成：${successCount} 项成功，${failedCount} 项失败`)
+    }
+  } catch (err) {
+    console.error('后处理失败:', err)
+    message.error('后处理失败：' + err.message)
+  } finally {
+    postProcessing.value = false
+  }
+}
+
 onMounted(() => {
   loadData()
 })
@@ -153,6 +315,9 @@ onMounted(() => {
             </a-button-group>
             <a-button v-if="!editing" @click="handleEdit">编辑</a-button>
             <a-button v-if="!editing" @click="handleExport">导出</a-button>
+            <a-button v-if="!editing" type="default" :loading="postProcessing" @click="handleReprocess">
+              {{ postProcessing ? '处理中...' : '🔄 重新处理' }}
+            </a-button>
             <a-button v-if="!editing" danger @click="handleDelete">删除</a-button>
           </template>
         </PageHeader>
@@ -187,6 +352,114 @@ onMounted(() => {
                 </a-button>
               </div>
             </div>
+
+            <!-- 连贯性评分面板 -->
+            <a-card title="📊 章节连贯性评分" :bordered="false" class="coherence-card">
+              <template #extra>
+                <a-button
+                  type="primary"
+                  :loading="scoring"
+                  :disabled="chapter.chapterNumber <= 1"
+                  @click="handleCoherenceScore"
+                >
+                  开始评分
+                </a-button>
+              </template>
+              
+              <a-empty v-if="!scoreResult && !scoring" description="点击开始评分，AI将分析本章与上一章的连贯性" />
+              
+              <a-spin :spinning="scoring">
+                <div v-if="scoreResult" class="score-result">
+                  <!-- 总分 -->
+                  <div class="overall-score">
+                    <a-progress
+                      type="circle"
+                      :percent="scoreResult.overallScore"
+                      :status="scoreResult.passed ? 'success' : 'exception'"
+                    />
+                    <div class="score-level">
+                      <a-tag :color="scoreResult.passed ? 'success' : 'error'" size="large">
+                        {{ scoreResult.level }}
+                      </a-tag>
+                    </div>
+                  </div>
+                  
+                  <!-- 各维度评分 -->
+                  <div class="dimension-scores">
+                    <div
+                      v-for="dim in scoreResult.dimensions"
+                      :key="dim.key"
+                      class="dimension-item"
+                    >
+                      <div class="dimension-header">
+                        <span class="dimension-name">{{ dim.name }}</span>
+                        <span class="dimension-score">{{ dim.score }}分</span>
+                      </div>
+                      <a-progress
+                        :percent="dim.score"
+                        :show-info="false"
+                        :status="dim.score >= 60 ? 'success' : 'exception'"
+                      />
+                      <div class="dimension-analysis">{{ dim.analysis }}</div>
+                    </div>
+                  </div>
+                  
+                  <!-- 修改建议 -->
+                  <div v-if="suggestions.length > 0" class="suggestions">
+                    <div class="suggestions-title">📝 修改建议</div>
+                    <a-list :data-source="suggestions" size="small">
+                      <template #renderItem="{ item }">
+                        <a-list-item>
+                          <a-list-item-meta :description="item" />
+                        </a-list-item>
+                      </template>
+                    </a-list>
+                  </div>
+                </div>
+              </a-spin>
+            </a-card>
+
+            <!-- 后处理结果面板 -->
+            <a-card v-if="postProcessResults" title="📊 后处理结果" :bordered="false" class="post-process-card">
+              <div class="process-results">
+                <div class="result-item" :class="{ success: postProcessResults.structuredSummary.success, failed: !postProcessResults.structuredSummary.success }">
+                  <span class="result-name">结构化摘要</span>
+                  <a-tag :color="postProcessResults.structuredSummary.success ? 'success' : 'error'">
+                    {{ postProcessResults.structuredSummary.success ? '成功' : '失败' }}
+                  </a-tag>
+                </div>
+                <div class="result-item" :class="{ success: postProcessResults.foreshadowing.success, failed: !postProcessResults.foreshadowing.success }">
+                  <span class="result-name">伏笔提取</span>
+                  <a-tag :color="postProcessResults.foreshadowing.success ? 'success' : 'error'">
+                    {{ postProcessResults.foreshadowing.success ? `成功 (${postProcessResults.foreshadowing.count}个)` : '失败' }}
+                  </a-tag>
+                </div>
+                <div class="result-item" :class="{ success: postProcessResults.characterAppearance.success, failed: !postProcessResults.characterAppearance.success }">
+                  <span class="result-name">角色出场</span>
+                  <a-tag :color="postProcessResults.characterAppearance.success ? 'success' : 'error'">
+                    {{ postProcessResults.characterAppearance.success ? `成功 (${postProcessResults.characterAppearance.count}个)` : '失败' }}
+                  </a-tag>
+                </div>
+                <div class="result-item" :class="{ success: postProcessResults.characterStatus.success, failed: !postProcessResults.characterStatus.success }">
+                  <span class="result-name">角色状态</span>
+                  <a-tag :color="postProcessResults.characterStatus.success ? 'success' : 'error'">
+                    {{ postProcessResults.characterStatus.success ? '成功' : '失败' }}
+                  </a-tag>
+                </div>
+                <div class="result-item" :class="{ success: postProcessResults.foreshadowingResolution.success, failed: !postProcessResults.foreshadowingResolution.success }">
+                  <span class="result-name">伏笔回收</span>
+                  <a-tag :color="postProcessResults.foreshadowingResolution.success ? 'success' : 'error'">
+                    {{ postProcessResults.foreshadowingResolution.success ? `成功 (${postProcessResults.foreshadowingResolution.count}个)` : '失败' }}
+                  </a-tag>
+                </div>
+                <div class="result-item" :class="{ success: postProcessResults.timeline.success, failed: !postProcessResults.timeline.success }">
+                  <span class="result-name">时间线事件</span>
+                  <a-tag :color="postProcessResults.timeline.success ? 'success' : 'error'">
+                    {{ postProcessResults.timeline.success ? `成功 (${postProcessResults.timeline.count}个)` : '失败' }}
+                  </a-tag>
+                </div>
+              </div>
+            </a-card>
           </template>
 
           <!-- 编辑模式 -->
@@ -320,5 +593,111 @@ onMounted(() => {
 
 .nav-btn {
   font-size: 15px;
+}
+
+/* 连贯性评分样式 */
+.coherence-card {
+  margin-top: var(--spacing-lg);
+}
+
+.score-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.overall-score {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.score-level {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.dimension-scores {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.dimension-item {
+  padding: var(--spacing-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.dimension-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-xs);
+}
+
+.dimension-name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.dimension-score {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.dimension-analysis {
+  margin-top: var(--spacing-xs);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* 后处理结果样式 */
+.post-process-card {
+  margin-top: var(--spacing-lg);
+}
+
+.process-results {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--spacing-md);
+}
+
+.result-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid transparent;
+}
+
+.result-item.success {
+  border-left-color: var(--success-color, #52c41a);
+}
+
+.result-item.failed {
+  border-left-color: var(--error-color, #ff4d4f);
+}
+
+.result-name {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.suggestions {
+  padding: var(--spacing-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.suggestions-title {
+  font-weight: 600;
+  margin-bottom: var(--spacing-sm);
+  color: var(--text-primary);
 }
 </style>
