@@ -1,8 +1,9 @@
 import { characterDao, foreshadowingDao, chapterDao, timelineEventDao } from './dao'
+import { getBible, formatBibleForPrompt } from './novelBible'
 
 /**
  * 上下文构建器
- * 用于智能选择相关章节、构建角色状态追踪、伏笔追踪等
+ * 用于智能选择相关章节、构建角色状态追踪、伏笔追踪、小说圣经等
  */
 
 /**
@@ -17,7 +18,8 @@ export async function buildChapterContext(novelId, targetChapterNumber, options 
     summaryLimit = 100,          // 摘要限制
     includeCharacterStatus = true, // 是否包含角色状态
     includeForeshadowing = true,   // 是否包含伏笔信息
-    includeTimeline = true         // 是否包含时间线
+    includeTimeline = true,         // 是否包含时间线
+    includeBible = true             // 是否包含小说圣经（替代上述三项的累计知识）
   } = options
 
   const context = {
@@ -25,7 +27,8 @@ export async function buildChapterContext(novelId, targetChapterNumber, options 
     chapterSummaries: [],
     characterStatus: null,
     foreshadowingInfo: null,
-    timeline: null
+    timeline: null,
+    bibleText: null
   }
 
   try {
@@ -35,17 +38,23 @@ export async function buildChapterContext(novelId, targetChapterNumber, options 
     // 获取章节摘要
     context.chapterSummaries = await chapterDao.getChapterSummaries(novelId, summaryLimit)
 
-    // 获取角色状态
-    if (includeCharacterStatus) {
+    // 小说圣经模式：用 bible 替代独立的角色/伏笔/时间线查询
+    if (includeBible) {
+      const bible = await getBible(novelId)
+      if (bible) {
+        context.bibleText = formatBibleForPrompt(bible, 3000)
+      }
+    }
+
+    // 传统模式（当 bible 不可用时作为降级，或与 bible 叠加使用）
+    if (includeCharacterStatus && !context.bibleText) {
       context.characterStatus = await buildCharacterStatusContext(novelId)
     }
 
-    // 获取伏笔信息
-    if (includeForeshadowing) {
+    if (includeForeshadowing && !context.bibleText) {
       context.foreshadowingInfo = await buildForeshadowingContext(novelId)
     }
 
-    // 获取时间线
     if (includeTimeline) {
       context.timeline = await buildTimelineContext(novelId, targetChapterNumber)
     }
@@ -131,14 +140,14 @@ export async function buildForeshadowingContext(novelId) {
         id: f.id,
         content: f.content,
         importance: f.importance,
-        plantedInChapter: f.chapterId,
+        plantedInChapter: f.plantedInChapter || f.chapterId,
         relatedCharacters: f.relatedCharacters || [],
         notes: f.notes || ''
       })),
       highImportance: highImportance.map(f => ({
         id: f.id,
         content: f.content,
-        plantedInChapter: f.chapterId
+        plantedInChapter: f.plantedInChapter || f.chapterId
       })),
       pendingCount: pending.length,
       highImportanceCount: highImportance.length,
@@ -241,6 +250,13 @@ export async function selectRelevantChapters(novelId, targetChapterNumber, relat
  */
 export function formatContextForPrompt(context) {
   let promptText = ''
+
+  // 如有圣经文本，优先使用（它已包含角色/伏笔/时间线的精简摘要）
+  if (context.bibleText) {
+    promptText += '\n【小说圣经（全书累计知识）】\n'
+    promptText += context.bibleText
+    return promptText
+  }
 
   // 角色状态
   if (context.characterStatus) {

@@ -11,6 +11,7 @@ const db = new Dexie('NovelAIDB')
 // v6: 新增角色关系表
 // v7: 新增大纲表、剧情线表、大纲事件表
 // v8: 新增后台任务表，章节表添加后处理状态字段
+// v9: 新增小说圣经表，用于积累跨章节的结构化知识
 db.version(8).stores({
   novels: '++id, title, createdAt, updatedAt',
   chapters: '++id, novelId, chapterNumber, createdAt, updatedAt',
@@ -42,6 +43,26 @@ db.version(8).stores({
   outlineEvents: '++id, novelId, plotLineId, order, createdAt, updatedAt',
   // 后台任务表：存储所有静默任务
   backgroundTasks: '++id, type, status, novelId, chapterId, createdAt, updatedAt'
+})
+
+db.version(9).stores({
+  novels: '++id, title, createdAt, updatedAt',
+  chapters: '++id, novelId, chapterNumber, createdAt, updatedAt',
+  characters: '++id, novelId, name, type, createdAt, updatedAt',
+  characterRelations: '++id, novelId, sourceId, targetId, type, createdAt, updatedAt',
+  foreshadowing: '++id, novelId, type, status, createdAt, updatedAt',
+  generationTasks: '++id, novelId, status, createdAt, updatedAt',
+  timelineEvents: '++id, novelId, chapterId, createdAt',
+  plotBranches: '++id, novelId, type, status, createdAt, updatedAt',
+  worldTemplates: '++id, category, createdAt, updatedAt',
+  inspirations: '++id, status, createdAt, updatedAt',
+  bookmarks: '++id, novelId, chapterId, createdAt',
+  annotations: '++id, novelId, chapterId, createdAt, updatedAt',
+  outlines: '++id, novelId, type, createdAt, updatedAt',
+  plotLines: '++id, novelId, type, status, createdAt, updatedAt',
+  outlineEvents: '++id, novelId, plotLineId, order, createdAt, updatedAt',
+  backgroundTasks: '++id, type, status, novelId, chapterId, createdAt, updatedAt',
+  novelBibles: '++id, novelId, updatedAt'
 })
 
 export default db

@@ -3,6 +3,13 @@ import { message } from 'ant-design-vue'
 import { characterDao } from '@/utils/dao'
 
 /**
+ * 转义字符串中的正则特殊字符
+ */
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
  * 角色管理组合式函数
  * 提供角色的CRUD操作和状态追踪功能
  */
@@ -304,16 +311,17 @@ export function useCharacter() {
 
       for (const char of allCharacters) {
         // 检查角色名是否在内容中出现
-        const nameRegex = new RegExp(char.name, 'g')
+        const escapedName = escapeRegExp(char.name)
+        const nameRegex = new RegExp(escapedName, 'g')
         const matches = content.match(nameRegex)
-        
+
         if (matches && matches.length > 0) {
           // 提取角色在章节中的事件
           const events = extractCharacterEvents(content, char.name)
-          
+
           // 更新角色出场记录
           await characterDao.addAppearance(char.id, chapterId, events)
-          
+
           appearedCharacters.push({
             id: char.id,
             name: char.name,
@@ -393,8 +401,8 @@ export function useCharacter() {
    */
   const extractCharacterStatus = (content, character) => {
     const statusUpdate = {}
-    const charName = character.name
-    
+    const escapedName = escapeRegExp(character.name)
+
     // 检测位置变化
     const locationPatterns = [
       /来到[了]?([^，。！？]{2,10})/,
@@ -402,16 +410,16 @@ export function useCharacter() {
       /出现在([^，。！？]{2,10})/,
       /身处([^，。！？]{2,10})/
     ]
-    
+
     for (const pattern of locationPatterns) {
-      const regex = new RegExp(charName + pattern.source)
+      const regex = new RegExp(escapedName + pattern.source)
       const match = content.match(regex)
       if (match) {
         statusUpdate.location = match[1]
         break
       }
     }
-    
+
     // 检测状态变化
     const conditionPatterns = [
       { regex: /受伤|负伤|重伤/, condition: '受伤' },
@@ -419,24 +427,24 @@ export function useCharacter() {
       { regex: /死亡|牺牲|陨落/, condition: '死亡' },
       { regex: /突破|晋升|进阶/, condition: '突破' }
     ]
-    
+
     for (const { regex, condition } of conditionPatterns) {
-      const pattern = new RegExp(charName + regex.source)
+      const pattern = new RegExp(escapedName + regex.source)
       if (pattern.test(content)) {
         statusUpdate.condition = condition
         break
       }
     }
-    
+
     // 检测实力变化
     const powerPatterns = [
       /实力[大]?[增减]/,
       /修为[大]?[增减]/,
       /境界[提升降低]/
     ]
-    
+
     for (const pattern of powerPatterns) {
-      const regex = new RegExp(charName + pattern.source)
+      const regex = new RegExp(escapedName + pattern.source)
       const match = content.match(regex)
       if (match) {
         statusUpdate.powerLevel = match[0]

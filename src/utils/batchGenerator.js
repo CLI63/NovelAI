@@ -12,6 +12,7 @@ export const generationStrategies = {
   // 开篇章节策略：详细生成
   opening: {
     name: '开篇策略',
+    phase: 'opening',
     minWords: 3000,
     maxWords: 5000,
     useOutline: true,
@@ -20,6 +21,7 @@ export const generationStrategies = {
   // 发展章节策略：标准生成
   development: {
     name: '发展策略',
+    phase: 'development',
     minWords: 2000,
     maxWords: 3000,
     useOutline: true,
@@ -28,6 +30,7 @@ export const generationStrategies = {
   // 过渡章节策略：精简生成
   transition: {
     name: '过渡策略',
+    phase: 'ending',
     minWords: 1500,
     maxWords: 2500,
     useOutline: false,
@@ -36,6 +39,7 @@ export const generationStrategies = {
   // 高潮章节策略：详细生成
   climax: {
     name: '高潮策略',
+    phase: 'climax',
     minWords: 3000,
     maxWords: 4000,
     useOutline: true,
@@ -79,6 +83,7 @@ export function getStrategyInfo(progress, totalChapters) {
   const strategy = determineStrategy(chapterNumber, totalChapters)
   return {
     name: strategy.name,
+    phase: strategy.phase,
     description: strategy.description,
     wordRange: [strategy.minWords, strategy.maxWords], // 返回数组格式以支持 wordRange[0]/[1] 访问
     minWords: strategy.minWords,
@@ -109,6 +114,7 @@ export async function createSmartBatchTask(novelId, startChapter, endChapter, no
       summary: null,
       wordCount: 0,
       strategy: strategy.name,
+      phase: strategy.phase,
       minWords: strategy.minWords,
       maxWords: strategy.maxWords,
       useOutline: strategy.useOutline
@@ -206,7 +212,9 @@ export async function executeBatchTask(taskId, novel, generateStream, generate, 
               chapterConfig.minWords,
               chapterConfig.maxWords,
               chapterConfig.number,
-              enhancedContext
+              enhancedContext,
+              chapterConfig.phase,
+              task.options?.totalChapters
             )
 
             let contentBuffer = ''
@@ -225,7 +233,9 @@ export async function executeBatchTask(taskId, novel, generateStream, generate, 
             chapterConfig.minWords,
             chapterConfig.maxWords,
             chapterConfig.number,
-            enhancedContext
+            enhancedContext,
+            chapterConfig.phase,
+            task.options?.totalChapters
           )
 
           let contentBuffer = ''

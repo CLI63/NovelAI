@@ -2,6 +2,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import { chapterDao } from '@/utils/dao'
+import { getVolumeContext } from '@/utils/prompts'
 
 /**
  * 章节数据操作相关的组合式函数
@@ -94,13 +95,14 @@ export function useChapter() {
    * 创建新章节
    * @param {Object} chapterData - 章节数据
    */
-  const createChapter = async (chapterData) => {
+  const createChapter = async (chapterData, outline = null) => {
     loading.value = true
     error.value = null
 
     try {
       const chapter = {
         ...chapterData,
+        volumeName: chapterData.volumeName || (outline ? getVolumeContext(chapterData.chapterNumber, outline)?.name || '' : ''),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
@@ -154,7 +156,7 @@ export function useChapter() {
       cancelText: '取消',
       onOk: async () => {
         try {
-          await chapterDao.delete(id)
+          await chapterDao.deleteCascade(id)
           message.success('删除成功')
           onSuccess?.()
         } catch (err) {
@@ -168,7 +170,8 @@ export function useChapter() {
    * 计算下一个章节序号
    */
   const nextChapterNumber = computed(() => {
-    return chapters.value?.length ? chapters.value.length + 1 : 1
+    if (!chapters.value?.length) return 1
+    return Math.max(...chapters.value.map(ch => Number(ch.chapterNumber) || 0)) + 1
   })
 
   /**

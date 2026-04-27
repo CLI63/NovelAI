@@ -3,6 +3,7 @@ import { message } from 'ant-design-vue'
 import { outlineDao, plotLineDao, outlineEventDao, chapterDao, characterDao, foreshadowingDao } from '@/utils/dao'
 import { callAI } from '@/utils/api'
 import { prompts } from '@/utils/prompts'
+import { useAppStore } from '@/stores/app'
 
 /**
  * 大纲管理组合式函数
@@ -668,7 +669,13 @@ export function useOutline() {
         .replace('{totalChapters}', novelData.chapterStructure?.totalChapters || 50)
         .replace('{mainCharacters}', JSON.stringify(novelData.mainCharacters || []))
 
-      const response = await callAI(prompt)
+      const appStore = useAppStore()
+      const response = await callAI(
+        [{ role: 'user', content: prompt }],
+        appStore.settings.aiProvider,
+        appStore.getCurrentApiKey(),
+        appStore.getCurrentModel()
+      )
       const outline = parseAIOutlineResponse(response)
       return outline
     } catch (err) {
@@ -688,7 +695,13 @@ export function useOutline() {
         .replace('{plotLineDescription}', plotLine.description || '')
         .replace('{context}', JSON.stringify(context))
 
-      const response = await callAI(prompt)
+      const appStore = useAppStore()
+      const response = await callAI(
+        [{ role: 'user', content: prompt }],
+        appStore.settings.aiProvider,
+        appStore.getCurrentApiKey(),
+        appStore.getCurrentModel()
+      )
       const suggestions = parseAIEventSuggestions(response)
       return suggestions
     } catch (err) {

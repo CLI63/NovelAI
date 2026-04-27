@@ -1,7 +1,8 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
-import { novelDao, chapterDao } from '@/utils/dao'
+import { novelDao, chapterDao, characterDao, foreshadowingDao, characterRelationDao, bookmarkDao, annotationDao, plotLineDao, outlineEventDao } from '@/utils/dao'
+import db from '@/utils/db'
 import { useAppStore } from '@/stores/app'
 
 /**
@@ -135,11 +136,66 @@ export function useNovel() {
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
+          // 删除所有章节
+          const chapters = await chapterDao.getByNovelId(id)
+          const chapterIds = chapters.map(ch => ch.id)
+          if (chapterIds.length > 0) {
+            await db.chapters.bulkDelete(chapterIds)
+          }
+
+          // 级联删除关联数据
+          const deletePromises = [
+            // 角色及角色关系
+            characterDao.getByNovelId(id).then(chars => {
+              const charIds = chars.map(c => c.id)
+              if (charIds.length > 0) {
+                return Promise.all([
+                  db.characters.bulkDelete(charIds),
+                  characterRelationDao.deleteByNovelId(id)
+                ])
+              }
+            }),
+            // 伏笔
+            foreshadowingDao.getByNovelId(id).then(items => {
+              const ids = items.map(i => i.id)
+              if (ids.length > 0) return db.foreshadowing.bulkDelete(ids)
+            }),
+            // 时间线事件
+            db.timelineEvents.where('novelId').equals(id).delete(),
+            // 生成任务
+            db.generationTasks.where('novelId').equals(id).delete(),
+            // 剧情分支
+            db.plotBranches.where('novelId').equals(id).delete(),
+            // 书签
+            bookmarkDao.deleteByNovelId(id),
+            // 批注
+            annotationDao.deleteByNovelId(id),
+            // 剧情线关联事件(先删事件再删剧情线)
+            plotLineDao.getByNovelId(id).then(plotLines => {
+              const plotLineIds = plotLines.map(pl => pl.id)
+              if (plotLineIds.length > 0) {
+                return Promise.all([
+                  db.outlineEvents.where('plotLineId').anyOf(plotLineIds).delete(),
+                  db.plotLines.bulkDelete(plotLineIds)
+                ])
+              }
+            }),
+            // 大纲
+            db.outlines.where('novelId').equals(id).delete(),
+            // 后台任务
+            db.backgroundTasks.where('novelId').equals(id).delete(),
+            // 小说圣经
+            db.novelBibles.where('novelId').equals(id).delete(),
+          ]
+
+          await Promise.all(deletePromises)
+
+          // 最后删除小说本体
           await novelDao.delete(id)
           message.success('删除成功')
           onSuccess?.()
         } catch (err) {
-          message.error('删除失败')
+          message.error('删除失败：' + err.message)
         }
       },
     })

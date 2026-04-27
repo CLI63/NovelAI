@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, reactive } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import { useNovel, useNovelStats } from '@/composables/useNovel'
@@ -8,10 +8,15 @@ import { useCharacter } from '@/composables/useCharacter'
 import { useForeshadowing } from '@/composables/useForeshadowing'
 import { useGenerationQueue } from '@/composables/useGenerationQueue'
 import { usePlotBranch } from '@/composables/usePlotBranch'
+import { useAppStore } from '@/stores/app'
 import PageHeader from '@/components/common/PageHeader.vue'
 import NovelInfo from '@/components/novel/NovelInfo.vue'
 import ChapterList from '@/components/chapter/ChapterList.vue'
 import RelationshipGraph from '@/components/character/RelationshipGraph.vue'
+import FullGenerationProgress from '@/components/chapter/FullGenerationProgress.vue'
+import { useFullNovelQualityCheck } from '@/composables/useFullNovelQualityCheck'
+import { useAI } from '@/composables/useAI'
+import { useFullNovelGeneration } from '@/composables/useFullNovelGeneration'
 
 const router = useRouter()
 const route = useRoute()
@@ -19,6 +24,12 @@ const route = useRoute()
 const { novel, loading: novelLoading, loadNovel, deleteNovel, goToEdit } = useNovel()
 const { chapters, loading: chaptersLoading, loadChapters, goToChapter, goToCreate, deleteChapter } = useChapter()
 const { exportNovel } = useChapterExport()
+const { generate: aiGenerate } = useAI()
+const { scanResults, scanning, runFullScan } = useFullNovelQualityCheck()
+
+const showFullGenModal = ref(false)
+const fullGen = reactive(useFullNovelGeneration())
+const fullGenPrompt = ref('')
 
 // 角色管理
 const {
@@ -55,6 +66,71 @@ const {
   taskStats
 } = useGenerationQueue()
 
+// 全本一键生成
+const handleStartFullGeneration = async () => {
+  const store = useAppStore()
+  if (!store.getCurrentApiKey()) {
+    message.warning('请先在设置中配置 API Key')
+    router.push('/settings')
+    return
+  }
+
+  showFullGenModal.value = true
+
+  try {
+    await fullGen.start(novel.value.id, fullGenPrompt.value)
+
+    if (fullGen.phase.value === 'completed') {
+      message.success(`全本生成完成，章节后处理将在后台继续执行。共 ${fullGen.results.value.length} 章`)
+      showFullGenModal.value = false
+      fullGen.reset()
+      router.push(`/reader/${novel.value.id}`)
+    }
+  } catch (error) {
+    console.error('全本生成失败:', error)
+    message.error('全本生成失败：' + error.message)
+  }
+}
+
+// 全本质量扫描
+const showQualityModal = ref(false)
+
+const handleQualityScan = async () => {
+  const hasAi = !!useAppStore().getCurrentApiKey()
+  if (!hasAi) {
+    message.warning('配置 API Key 后可启用 AI 深度检查')
+  }
+
+  showQualityModal.value = true
+  await runFullScan(novel.value.id, {
+    callAI: hasAi ? aiGenerate : null
+  })
+}
+
+const qualityRatingColor = (rating) => ({
+  excellent: '#52c41a',
+  good: '#1890ff',
+  fair: '#faad14',
+  poor: '#ff4d4f'
+})[rating] || '#999'
+
+const checkLabels = {
+  wordCount: '📏 字数均衡',
+  characterPresence: '👤 角色出场',
+  foreshadowing: '🎯 伏笔回收',
+  timeline: '📅 时间线连贯性',
+  characterConsistency: '👥 角色一致性（AI）',
+  plotHoles: '🔍 情节漏洞（AI）',
+  styleConsistency: '✍️ 风格一致性（AI）'
+}
+
+const qualityRatingText = (rating) => ({
+  excellent: '优秀',
+  good: '良好',
+  fair: '一般',
+  poor: '需改进'
+})[rating] || '未知'
+
 // 剧情分支管理
 const {
   branches,
@@ -65,6 +141,18 @@ const {
   deleteBranch,
   mergeBranch
 } = usePlotBranch()
+
+const chapterSortOrder = ref('desc') // 'asc' | 'desc'
+
+const sortedChapters = computed(() => {
+  const list = [...chapters.value]
+  list.sort((a, b) => chapterSortOrder.value === 'desc' ? b.chapterNumber - a.chapterNumber : a.chapterNumber - b.chapterNumber)
+  return list
+})
+
+const toggleChapterSort = () => {
+  chapterSortOrder.value = chapterSortOrder.value === 'desc' ? 'asc' : 'desc'
+}
 
 const activeTab = ref('chapters')
 const characterViewMode = ref('cards') // 'cards' | 'graph'
@@ -244,10 +332,25 @@ const handleDeleteCharacterConfirm = (character) => {
 }
 
 // ============ 辅助方法 ============
-const getChapterTitle = (chapterId) => {
-  if (!chapterId) return ''
-  const chapter = chapters.value.find(c => c.id === chapterId)
-  return chapter ? chapter.title : `章节 ${chapterId}`
+const getChapterTitle = (chapterRef) => {
+  if (!chapterRef) return ''
+
+  const chapter = chapters.value.find(c => c.id === chapterRef || c.chapterNumber === chapterRef)
+  return chapter ? chapter.title : `章节 ${chapterRef}`
+}
+
+const goToForeshadowingChapter = (chapterRef, fallbackChapterNumber = null) => {
+  if (!chapterRef || !novel.value) return
+
+  const targetChapter = chapters.value.find(c => c.id === chapterRef || c.chapterNumber === chapterRef)
+  if (targetChapter) {
+    goToChapter(novel.value.id, targetChapter.chapterNumber)
+    return
+  }
+
+  if (fallbackChapterNumber) {
+    goToChapter(novel.value.id, fallbackChapterNumber)
+  }
 }
 
 // ============ 伏笔管理方法 ============
@@ -299,9 +402,14 @@ const handleSaveForeshadowing = async () => {
 }
 
 const handleResolveForeshadowing = async (foreshadowing) => {
+  const nextChapterNumber = chapters.value.length > 0
+    ? Math.max(...chapters.value.map(ch => Number(ch.chapterNumber) || 0)) + 1
+    : 1
+
   await updateForeshadowing(foreshadowing.id, {
     status: 'resolved',
-    resolvedIn: chapters.value.length + 1
+    resolvedIn: null,
+    resolvedInChapterNumber: nextChapterNumber
   })
   message.success('伏笔已标记为回收')
   loadForeshadowing(novel.value.id)
@@ -489,6 +597,26 @@ onMounted(() => {
             <a-button type="primary" @click="goToCreate(novel.id)">
               生成章节
             </a-button>
+            <a-button
+              type="primary"
+              ghost
+              class="btn-full-gen"
+              @click="handleStartFullGeneration"
+            >
+              🚀 生成全本
+            </a-button>
+            <a-textarea
+              v-model:value="fullGenPrompt"
+              :rows="1"
+              style="width: 260px"
+              placeholder="全本生成额外要求（可选）"
+            />
+            <a-button
+              :loading="scanning"
+              @click="handleQualityScan"
+            >
+              质量扫描
+            </a-button>
           </template>
         </PageHeader>
 
@@ -505,12 +633,20 @@ onMounted(() => {
               </template>
               <div class="tab-header">
                 <span class="chapter-count">{{ chapters.length }} 章</span>
-                <a-button type="primary" @click="goToCreate(novel.id)">
-                  生成新章节
-                </a-button>
+                <a-space>
+                  <a-button size="small" @click="toggleChapterSort">
+                    <template #icon>
+                      <span>{{ chapterSortOrder === 'desc' ? '⬇️' : '⬆️' }}</span>
+                    </template>
+                    {{ chapterSortOrder === 'desc' ? '最新优先' : '最早优先' }}
+                  </a-button>
+                  <a-button type="primary" @click="goToCreate(novel.id)">
+                    生成新章节
+                  </a-button>
+                </a-space>
               </div>
               <ChapterList
-                :chapters="chapters"
+                :chapters="sortedChapters"
                 :novel-id="novel.id"
                 :loading="chaptersLoading"
                 @view="handleViewChapter"
@@ -674,14 +810,14 @@ onMounted(() => {
                       <div class="foreshadowing-meta">
                         <span v-if="item.chapterId" class="foreshadowing-chapter">
                           <strong>产生章节：</strong>
-                          <a-button type="link" size="small" @click="goToChapter({ id: item.chapterId })">
-                            {{ getChapterTitle(item.chapterId) }}
+                          <a-button type="link" size="small" @click="goToForeshadowingChapter(item.chapterId, item.plantedInChapter)">
+                            {{ getChapterTitle(item.chapterId || item.plantedInChapter) }}
                           </a-button>
                         </span>
                         <span v-if="item.resolvedIn" class="foreshadowing-resolved-chapter">
                           <strong>回收章节：</strong>
-                          <a-button type="link" size="small" @click="goToChapter({ id: item.resolvedIn })">
-                            {{ getChapterTitle(item.resolvedIn) }}
+                          <a-button type="link" size="small" @click="goToForeshadowingChapter(item.resolvedIn, item.resolvedInChapterNumber)">
+                            {{ getChapterTitle(item.resolvedIn || item.resolvedInChapterNumber) }}
                           </a-button>
                         </span>
                       </div>
@@ -851,6 +987,41 @@ onMounted(() => {
       </template>
     </a-spin>
 
+    <!-- 全本生成进度弹窗 -->
+    <a-modal
+      v-model:open="showFullGenModal"
+      title="🚀 全本自动生成"
+      :footer="null"
+      :closable="fullGen.phase === 'completed' || fullGen.phase === 'error' || fullGen.phase === 'cancelled'"
+      :mask-closable="false"
+      :destroy-on-close="true"
+      width="720px"
+      class="full-gen-modal"
+    >
+      <FullGenerationProgress
+        :phase="fullGen.phase"
+        :progress="fullGen.progress"
+        :errors="fullGen.errors"
+        :results="fullGen.results"
+        :paused="fullGen.paused"
+        @pause="fullGen.pause"
+        @resume="fullGen.resume"
+        @cancel="fullGen.cancel"
+      />
+
+      <div
+        v-if="fullGen.phase === 'completed' || fullGen.phase === 'error' || fullGen.phase === 'cancelled'"
+        class="modal-footer-actions"
+      >
+        <a-button
+          type="primary"
+          @click="showFullGenModal = false; fullGen.reset()"
+        >
+          {{ fullGen.phase === 'completed' ? '完成' : '关闭' }}
+        </a-button>
+      </div>
+    </a-modal>
+
     <!-- 角色编辑弹窗 -->
     <a-modal
       v-model:open="characterModalVisible"
@@ -940,6 +1111,97 @@ onMounted(() => {
           </a-select>
         </a-form-item>
       </a-form>
+    </a-modal>
+
+    <!-- 全本质量扫描弹窗 -->
+    <a-modal
+      v-model:open="showQualityModal"
+      title="📊 全本质量扫描"
+      :footer="null"
+      width="720px"
+      :destroy-on-close="true"
+    >
+      <a-spin :spinning="scanning">
+        <template v-if="scanResults && scanResults.summary">
+          <!-- 总体评分 -->
+          <a-card :bordered="false" class="quality-summary-card">
+            <div class="quality-score">
+              <a-progress
+                type="circle"
+                :percent="scanResults.summary.score"
+                :stroke-color="qualityRatingColor(scanResults.summary.rating)"
+                :format="() => qualityRatingText(scanResults.summary.rating)"
+                size="80"
+              />
+            </div>
+            <div class="quality-summary-detail">
+              <p>章节：{{ scanResults.totalChapters }} 章</p>
+              <p>角色：{{ scanResults.totalChars }} 个</p>
+              <p>
+                检查项通过：{{ scanResults.summary.passed }}/{{ scanResults.summary.total }}
+                <a-tag v-if="scanResults.summary.highIssues > 0" color="red">
+                  高优问题 {{ scanResults.summary.highIssues }} 个
+                </a-tag>
+              </p>
+            </div>
+          </a-card>
+
+          <!-- 各检查项详情 -->
+          <a-collapse class="quality-detail" :expand-icon-position="'right'">
+            <a-collapse-panel
+              v-for="(check, key) in scanResults.checks"
+              :key="key"
+            >
+              <template #header>
+                <span :style="{ color: check.passed !== false ? '#52c41a' : '#faad14' }">
+                  {{ checkLabels[key] || key }}
+                </span>
+              </template>
+              <p>{{ check.message }}</p>
+              <ul v-if="check.outliers?.length > 0" class="quality-issue-list">
+                <li v-for="item in check.outliers" :key="item.chapter">
+                  第{{ item.chapter }}章 {{ item.title }}：{{ item.wordCount }}字（{{ item.diff > 0 ? '+' : '' }}{{ item.diff }}%）
+                </li>
+              </ul>
+              <ul v-if="check.absentChapters?.length > 0" class="quality-issue-list">
+                <li v-for="item in check.absentChapters" :key="item.chapter">
+                  第{{ item.chapter }}章 {{ item.title }}
+                </li>
+              </ul>
+              <ul v-if="check.highPendingItems?.length > 0" class="quality-issue-list">
+                <li v-for="item in check.highPendingItems" :key="item.content">
+                  {{ item.content }}（埋设于第{{ item.plantedIn }}章）
+                </li>
+              </ul>
+              <ul v-if="check.issues?.length > 0" class="quality-issue-list">
+                <li v-for="(issue, i) in check.issues" :key="i" :class="'severity-' + issue.severity">
+                  <a-tag v-if="issue.severity === 'high'" color="red">高</a-tag>
+                  <a-tag v-else-if="issue.severity === 'medium'" color="orange">中</a-tag>
+                  <a-tag v-else color="blue">低</a-tag>
+                  {{ issue.description }}
+                  <span v-if="issue.suggestedFix" class="quality-fix">建议：{{ issue.suggestedFix }}</span>
+                </li>
+              </ul>
+              <div v-if="!check.outliers?.length && !check.absentChapters?.length && !check.highPendingItems?.length && !check.issues?.length" class="quality-pass">
+                ✅ 通过
+              </div>
+            </a-collapse-panel>
+          </a-collapse>
+
+          <!-- 关闭按钮 -->
+          <div class="modal-footer-actions">
+            <a-button type="primary" @click="showQualityModal = false">关闭</a-button>
+          </div>
+        </template>
+
+        <template v-else-if="scanResults && scanResults.overall === 'no_data'">
+          <a-empty description="小说不存在或尚无章节" />
+        </template>
+
+        <template v-else-if="!scanResults">
+          <a-empty description="点击「质量扫描」按钮开始检查" />
+        </template>
+      </a-spin>
     </a-modal>
   </div>
 </template>
@@ -1267,4 +1529,85 @@ onMounted(() => {
 .tab-icon {
   font-size: 16px;
 }
+
+/* 质量扫描弹窗 */
+.quality-summary-card {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 16px;
+  background: var(--bg-secondary);
+}
+
+.quality-score {
+  flex-shrink: 0;
+}
+
+.quality-summary-detail {
+  flex: 1;
+  font-size: 14px;
+}
+
+.quality-summary-detail p {
+  margin: 4px 0;
+}
+
+.quality-detail {
+  margin-bottom: 16px;
+}
+
+.quality-issue-list {
+  padding-left: 20px;
+  margin: 8px 0;
+  list-style: none;
+}
+
+.quality-issue-list li {
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.quality-issue-list li:last-child {
+  border-bottom: none;
+}
+
+.quality-issue-list .severity-high {
+  color: #ff4d4f;
+}
+
+.quality-issue-list .severity-medium {
+  color: #fa8c16;
+}
+
+.quality-fix {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #52c41a;
+}
+
+.quality-pass {
+  padding: 8px 0;
+  color: #52c41a;
+  font-weight: 500;
+}
+
+.btn-full-gen {
+  border-color: #764ba2;
+  color: #764ba2;
+}
+
+.btn-full-gen:hover {
+  border-color: #667eea;
+  color: #667eea;
+}
+
+.modal-footer-actions {
+  display: flex;
+  justify-content: center;
+  padding-top: 8px;
+}
+
 </style>

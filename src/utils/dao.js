@@ -28,15 +28,67 @@ export const novelDao = {
 
 export const chapterDao = {
   async add(chapter) {
+    const existing = await db.chapters
+      .where({ novelId: chapter.novelId, chapterNumber: chapter.chapterNumber })
+      .first()
+
+    if (existing) {
+      throw new Error(`第${chapter.chapterNumber}章已存在`)
+    }
+
     return await db.chapters.add(chapter)
   },
 
   async update(id, chapter) {
+    const current = await db.chapters.get(id)
+    if (!current) return 0
+
+    const targetNovelId = chapter.novelId ?? current.novelId
+    const targetChapterNumber = chapter.chapterNumber ?? current.chapterNumber
+    const existing = await db.chapters
+      .where({ novelId: targetNovelId, chapterNumber: targetChapterNumber })
+      .first()
+
+    if (existing && existing.id !== id) {
+      throw new Error(`第${targetChapterNumber}章已存在`)
+    }
+
     return await db.chapters.update(id, chapter)
   },
 
   async delete(id) {
     return await db.chapters.delete(id)
+  },
+
+  async deleteCascade(id) {
+    const chapter = await db.chapters.get(id)
+    if (!chapter) return false
+
+    await Promise.all([
+      db.backgroundTasks.where('chapterId').equals(id).delete(),
+      db.bookmarks.where('chapterId').equals(id).delete(),
+      db.annotations.where('chapterId').equals(id).delete(),
+      db.outlineEvents.where('chapterId').equals(id).delete(),
+      db.foreshadowing.where('chapterId').equals(id).delete(),
+      db.foreshadowing.where('resolvedIn').equals(id).modify({
+        status: 'pending',
+        resolvedIn: null,
+        resolvedInChapterNumber: null,
+        updatedAt: new Date().toISOString()
+      }),
+      db.characters.toCollection().modify(character => {
+        if (!Array.isArray(character.appearances)) return
+        const nextAppearances = character.appearances.filter(item => item.chapterId !== id)
+        if (nextAppearances.length !== character.appearances.length) {
+          character.appearances = nextAppearances
+          character.updatedAt = new Date().toISOString()
+        }
+      }),
+      db.timelineEvents.where('chapterId').equals(id).delete()
+    ])
+
+    await db.chapters.delete(id)
+    return true
   },
 
   async getById(id) {
@@ -55,16 +107,14 @@ export const chapterDao = {
     return await db.chapters
       .where('novelId')
       .equals(novelId)
-      .reverse()
       .sortBy('chapterNumber')
-      .then(chapters => chapters.slice(0, count))
+      .then(chapters => chapters.slice(-count))
   },
 
   async getChapterSummaries(novelId, limit = 100) {
     return await db.chapters
       .where('novelId')
       .equals(novelId)
-      .reverse()
       .sortBy('chapterNumber')
       .then(chapters => chapters.slice(0, limit).map(ch => ({
         chapterNumber: ch.chapterNumber,
@@ -228,10 +278,11 @@ export const foreshadowingDao = {
       .toArray()
   },
 
-  async markResolved(id, resolvedInChapterId) {
+  async markResolved(id, resolvedInChapterId, resolvedInChapterNumber = null) {
     return await db.foreshadowing.update(id, {
       status: 'resolved',
       resolvedIn: resolvedInChapterId,
+      resolvedInChapterNumber,
       updatedAt: new Date().toISOString()
     })
   },
@@ -406,8 +457,8 @@ export const inspirationDao = {
     return await db.inspirations
       .where('status')
       .equals(status)
-      .reverse()
       .sortBy('updatedAt')
+      .then(items => items.reverse())
   },
 
   async getDrafts() {

@@ -7,10 +7,6 @@ import { useChapter } from '@/composables/useChapter'
 import { useAI } from '@/composables/useAI'
 import { useGenerationQueue } from '@/composables/useGenerationQueue'
 import { useQualityCheck } from '@/composables/useQualityCheck'
-import { useCharacter } from '@/composables/useCharacter'
-import { useForeshadowing } from '@/composables/useForeshadowing'
-import { useOutline } from '@/composables/useOutline'
-import { useStructuredSummary } from '@/composables/useStructuredSummary'
 import { useResumeGeneration } from '@/composables/useResumeGeneration'
 import { useBackgroundTask } from '@/composables/useBackgroundTask'
 import { eventBus, EVENTS } from '@/utils/eventBus'
@@ -21,7 +17,8 @@ import {
   buildChapterFromOutlinePrompt
 } from '@/utils/prompts'
 import { buildChapterContext } from '@/utils/contextBuilder'
-import { createSmartBatchTask, executeBatchTask, getStrategyInfo } from '@/utils/batchGenerator'
+import { getStrategyInfo } from '@/utils/batchGenerator'
+import { processChapter } from '@/utils/chapterPostProcessor'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StreamOutput from '@/components/chapter/StreamOutput.vue'
 
@@ -36,7 +33,6 @@ const { generateStream, generate, checkApiKey } = useAI()
 // 生成任务队列
 const {
   tasks,
-  runningTask,
   loadTasks,
   createTask,
   updateTask,
@@ -91,10 +87,6 @@ const batchPaused = ref(false)
 const { checkResumableTask, resumeGeneration, clearProgress } = useResumeGeneration()
 const resumableTask = ref(null)
 const showResumeModal = ref(false)
-
-// 结构化摘要
-const { generateStructuredSummary, generating: summaryGenerating } = useStructuredSummary()
-const structuredSummaryData = ref(null)
 
 // 统计
 const { progress } = useNovelStats(novel, chapters)
@@ -175,12 +167,12 @@ const handleResumeTask = async () => {
               wordCount: content.length
             }
             
-            const chapterId = await createChapter(chapterData)
-            
+            const chapterId = await createChapter(chapterData, novel.value.outline)
+
             if (chapterId) {
               await afterChapterSave(chapterId, content, chapterNum)
             }
-            
+
             if (onChapterComplete) {
               await onChapterComplete(chapterNum, { content, title, wordCount: content.length })
             }
@@ -623,7 +615,7 @@ const doSaveStreamChapter = async () => {
       wordCount: streamContent.value.length,
     }
 
-    const id = await createChapter(chapterData)
+    const id = await createChapter(chapterData, novel.value.outline)
     if (id) {
       message.success({ content: '章节保存成功！', key: 'saving' })
       
@@ -662,197 +654,34 @@ const doSaveStreamChapter = async () => {
 }
 
 /**
- * 章节保存后的自动处理
- * @param {number} chapterId - 章节ID
- * @param {string} content - 章节内容
- * @param {number} chapterNumber - 章节号
- */
-/**
- * 章节保存后的自动处理（静默处理，只记录日志）
+ * 章节保存后的自动处理（静默执行，委托给统一的 postProcessor）
  * @param {number} chapterId - 章节ID
  * @param {string} content - 章节内容
  * @param {number} chapterNumber - 章节号
  * @param {boolean} showMessage - 是否显示处理结果消息
- * @returns {Object} 处理结果统计
+ * @returns {Promise<Object>} 处理结果统计
  */
 const afterChapterSave = async (chapterId, content, chapterNumber, showMessage = false) => {
-  const novelId = novel.value.id
-  const results = {
-    structuredSummary: { success: false, error: null },
-    foreshadowing: { success: false, error: null, count: 0 },
-    characterAppearance: { success: false, error: null, count: 0 },
-    characterStatus: { success: false, error: null },
-    foreshadowingResolution: { success: false, error: null, count: 0 },
-    timeline: { success: false, error: null, count: 0 },
-    characterChanges: { success: false, error: null, count: 0 },
-    newForeshadowing: { success: false, error: null, count: 0 }
-  }
+  const results = await processChapter({
+    novel: novel.value,
+    chapter: { id: chapterId, content, chapterNumber, title: '' },
+    callAI: generate
+  })
 
-  // 1. 生成结构化摘要（用于后续章节上下文）
-  let structuredSummary = null
-  try {
-    structuredSummary = await generateStructuredSummary(
-      { content, chapterNumber },
-      novel.value,
-      generate
-    )
-    if (structuredSummary) {
-      structuredSummaryData.value = structuredSummary
-      results.structuredSummary.success = true
-      console.log('结构化摘要生成完成:', structuredSummary)
-    }
-  } catch (err) {
-    results.structuredSummary.error = err.message
-    console.warn('生成结构化摘要失败:', err)
-  }
-
-  // 2. 提取新伏笔
-  try {
-    const { extractFromChapter } = useForeshadowing()
-    const newForeshadowings = await extractFromChapter(content, chapterId, novelId)
-    if (newForeshadowings && newForeshadowings.length > 0) {
-      results.foreshadowing.success = true
-      results.foreshadowing.count = newForeshadowings.length
-    } else {
-      results.foreshadowing.success = true
-    }
-  } catch (err) {
-    results.foreshadowing.error = err.message
-    console.warn('提取伏笔失败:', err)
-  }
-
-  // 3. 更新角色出场记录
-  try {
-    const { updateAppearancesFromContent } = useCharacter()
-    const appearedCharacters = await updateAppearancesFromContent(content, chapterId, novelId)
-    if (appearedCharacters && appearedCharacters.length > 0) {
-      results.characterAppearance.success = true
-      results.characterAppearance.count = appearedCharacters.length
-    } else {
-      results.characterAppearance.success = true
-    }
-  } catch (err) {
-    results.characterAppearance.error = err.message
-    console.warn('更新角色出场记录失败:', err)
-  }
-
-  // 4. 更新角色状态（位置、关系变化）
-  try {
-    const { updateStatusesFromContent } = useCharacter()
-    await updateStatusesFromContent(content, chapterId, novelId)
-    results.characterStatus.success = true
-  } catch (err) {
-    results.characterStatus.error = err.message
-    console.warn('更新角色状态失败:', err)
-  }
-
-  // 5. 检查伏笔回收
-  try {
-    const { checkForeshadowingResolution } = useForeshadowing()
-    const resolvedForeshadowings = await checkForeshadowingResolution(content, novelId, chapterId)
-    if (resolvedForeshadowings && resolvedForeshadowings.length > 0) {
-      results.foreshadowingResolution.success = true
-      results.foreshadowingResolution.count = resolvedForeshadowings.length
-    } else {
-      results.foreshadowingResolution.success = true
-    }
-  } catch (err) {
-    results.foreshadowingResolution.error = err.message
-    console.warn('检查伏笔回收失败:', err)
-  }
-
-  // 6. 记录时间线事件
-  try {
-    const { recordTimelineEvents } = useOutline()
-    const eventCount = await recordTimelineEvents(content, chapterId, novelId)
-    if (eventCount && eventCount > 0) {
-      results.timeline.success = true
-      results.timeline.count = eventCount
-    } else {
-      results.timeline.success = true
-    }
-  } catch (err) {
-    results.timeline.error = err.message
-    console.warn('记录时间线事件失败:', err)
-  }
-
-  // 7. 应用结构化摘要中的角色变化
-  if (structuredSummary?.characterChanges?.length > 0) {
-    let changeCount = 0
-    try {
-      const { updateCharacter } = useCharacter()
-      for (const change of structuredSummary.characterChanges) {
-        try {
-          if (change.characterId) {
-            await updateCharacter(change.characterId, {
-              notes: change.change
-            })
-            changeCount++
-          }
-        } catch (e) {
-          console.warn('更新角色变化失败:', e)
-        }
-      }
-      results.characterChanges.success = true
-      results.characterChanges.count = changeCount
-    } catch (err) {
-      results.characterChanges.error = err.message
-      console.warn('应用角色变化失败:', err)
-    }
-  } else {
-    results.characterChanges.success = true
-  }
-
-  // 8. 记录结构化摘要中的新伏笔
-  if (structuredSummary?.foreshadowing?.planted?.length > 0) {
-    let foreshadowCount = 0
-    try {
-      const { createForeshadowing } = useForeshadowing()
-      for (const f of structuredSummary.foreshadowing.planted) {
-        try {
-          if (f.content) {
-            await createForeshadowing({
-              novelId,
-              content: f.content,
-              relatedTo: f.relatedTo || '',
-              importance: f.importance || 'medium',
-              plantedInChapterId: chapterId,
-              status: 'pending'
-            })
-            foreshadowCount++
-          }
-        } catch (e) {
-          console.warn('创建伏笔记录失败:', e)
-        }
-      }
-      results.newForeshadowing.success = true
-      results.newForeshadowing.count = foreshadowCount
-    } catch (err) {
-      results.newForeshadowing.error = err.message
-      console.warn('记录新伏笔失败:', err)
-    }
-  } else {
-    results.newForeshadowing.success = true
-  }
-
-  // 显示处理结果消息（仅在请求时）
   if (showMessage) {
     const failedItems = Object.entries(results)
       .filter(([_, v]) => !v.success)
-      .map(([k, _]) => {
-        const names = {
-          structuredSummary: '结构化摘要',
-          foreshadowing: '伏笔提取',
-          characterAppearance: '角色出场',
-          characterStatus: '角色状态',
-          foreshadowingResolution: '伏笔回收',
-          timeline: '时间线',
-          characterChanges: '角色变化',
-          newForeshadowing: '新伏笔'
-        }
-        return names[k]
-      })
-    
+      .map(([k]) => ({
+        structuredSummary: '结构化摘要',
+        foreshadowingExtract: '伏笔提取',
+        characterAppearance: '角色出场',
+        characterStatus: '角色状态',
+        foreshadowingResolution: '伏笔回收',
+        timeline: '时间线',
+        characterChanges: '角色变化',
+        newForeshadowing: '新伏笔'
+      })[k])
+
     if (failedItems.length > 0) {
       message.warning(`后处理部分失败：${failedItems.join('、')}`)
     } else {
@@ -1010,7 +839,7 @@ const handleBatchGenerate = async () => {
           wordCount: content.length
         }
         
-        const chapterId = await createChapter(chapterData)
+        const chapterId = await createChapter(chapterData, novel.value.outline)
         
         // 章节保存后处理（提取伏笔、更新角色等）
         if (chapterId) {

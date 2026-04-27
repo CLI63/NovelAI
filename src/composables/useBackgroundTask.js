@@ -16,7 +16,8 @@ export function useBackgroundTask() {
     SUMMARY_GENERATION: 'summary_generation',       // 摘要生成
     FORESHADOWING_EXTRACT: 'foreshadowing_extract', // 伏笔提取
     CHARACTER_UPDATE: 'character_update',           // 角色更新
-    TIMELINE_RECORD: 'timeline_record'              // 时间线记录
+    TIMELINE_RECORD: 'timeline_record',              // 时间线记录
+    FULL_NOVEL_GENERATION: 'full_novel_generation'   // 全本生成
   }
 
   // 任务状态定义
@@ -46,9 +47,41 @@ export function useBackgroundTask() {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     }
-    
+
     const id = await db.backgroundTasks.add(task)
     return id
+  }
+
+  /**
+   * 确保章节后处理任务存在且不重复创建
+   * @param {Object} taskData - 任务数据
+   * @returns {Promise<Object>} 任务信息
+   */
+  const ensureChapterPostProcessTask = async (taskData) => {
+    const chapterTasks = await getTasksByChapter(taskData.chapterId)
+    const existingTask = chapterTasks.find(task =>
+      task.type === TASK_TYPES.CHAPTER_POST_PROCESS &&
+      [TASK_STATUS.PENDING, TASK_STATUS.RUNNING, TASK_STATUS.COMPLETED].includes(task.status)
+    )
+
+    if (existingTask) {
+      return { id: existingTask.id, task: existingTask, created: false }
+    }
+
+    const id = await createTask(taskData)
+    return {
+      id,
+      task: {
+        id,
+        type: taskData.type,
+        status: TASK_STATUS.PENDING,
+        novelId: taskData.novelId || null,
+        chapterId: taskData.chapterId || null,
+        chapterNumber: taskData.chapterNumber || null,
+        data: taskData.data || {}
+      },
+      created: true
+    }
   }
 
   /**
@@ -84,9 +117,8 @@ export function useBackgroundTask() {
     const novelTasks = await db.backgroundTasks
       .where('novelId')
       .equals(novelId)
-      .reverse()
       .sortBy('createdAt')
-    return novelTasks
+    return novelTasks.reverse()
   }
 
   /**
@@ -98,9 +130,8 @@ export function useBackgroundTask() {
     const chapterTasks = await db.backgroundTasks
       .where('chapterId')
       .equals(chapterId)
-      .reverse()
       .sortBy('createdAt')
-    return chapterTasks
+    return chapterTasks.reverse()
   }
 
   /**
@@ -110,15 +141,16 @@ export function useBackgroundTask() {
    */
   const getAllTasks = async (options = {}) => {
     const { limit = 50, offset = 0, status = null } = options
-    
+
     let query = db.backgroundTasks.toCollection()
-    
+
     if (status) {
       query = db.backgroundTasks.where('status').equals(status)
     }
-    
-    const allTasks = await query.reverse().sortBy('createdAt')
-    
+
+    const allTasks = await query.sortBy('createdAt')
+    allTasks.reverse()
+
     return {
       tasks: allTasks.slice(offset, offset + limit),
       total: allTasks.length
@@ -140,20 +172,20 @@ export function useBackgroundTask() {
   const cleanupCompletedTasks = async (days = 7) => {
     const cutoffDate = new Date()
     cutoffDate.setDate(cutoffDate.getDate() - days)
-    
+
     const completedTasks = await db.backgroundTasks
       .where('status')
       .anyOf([TASK_STATUS.COMPLETED, TASK_STATUS.FAILED])
       .toArray()
-    
-    const toDelete = completedTasks.filter(t => 
+
+    const toDelete = completedTasks.filter(t =>
       new Date(t.updatedAt) < cutoffDate
     )
-    
+
     for (const task of toDelete) {
       await db.backgroundTasks.delete(task.id)
     }
-    
+
     return toDelete.length
   }
 
@@ -164,13 +196,13 @@ export function useBackgroundTask() {
    */
   const getTaskStats = async (novelId = null) => {
     let allTasks
-    
+
     if (novelId) {
       allTasks = await getTasksByNovel(novelId)
     } else {
       allTasks = await db.backgroundTasks.toArray()
     }
-    
+
     return {
       total: allTasks.length,
       pending: allTasks.filter(t => t.status === TASK_STATUS.PENDING).length,
@@ -188,8 +220,8 @@ export function useBackgroundTask() {
    */
   const hasSuccessfulPostProcess = async (chapterId) => {
     const tasks = await getTasksByChapter(chapterId)
-    return tasks.some(t => 
-      t.type === TASK_TYPES.CHAPTER_POST_PROCESS && 
+    return tasks.some(t =>
+      t.type === TASK_TYPES.CHAPTER_POST_PROCESS &&
       t.status === TASK_STATUS.COMPLETED
     )
   }
@@ -202,7 +234,7 @@ export function useBackgroundTask() {
   const getChapterPostProcessStatus = async (chapterId) => {
     const tasks = await getTasksByChapter(chapterId)
     const postProcessTasks = tasks.filter(t => t.type === TASK_TYPES.CHAPTER_POST_PROCESS)
-    
+
     if (postProcessTasks.length === 0) {
       return {
         status: 'not_started',
@@ -210,9 +242,9 @@ export function useBackgroundTask() {
         lastTask: null
       }
     }
-    
+
     const lastTask = postProcessTasks[0]
-    
+
     switch (lastTask.status) {
       case TASK_STATUS.PENDING:
         return { status: 'pending', message: '等待处理', lastTask }
@@ -235,6 +267,7 @@ export function useBackgroundTask() {
     TASK_TYPES,
     TASK_STATUS,
     createTask,
+    ensureChapterPostProcessTask,
     updateTask,
     getPendingTasks,
     getTasksByNovel,

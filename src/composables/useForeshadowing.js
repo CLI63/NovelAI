@@ -99,9 +99,9 @@ export function useForeshadowing() {
    * @param {number} id - 伏笔ID
    * @param {number} resolvedInChapterId - 回收章节ID
    */
-  const markResolved = async (id, resolvedInChapterId) => {
+  const markResolved = async (id, resolvedInChapterId, resolvedInChapterNumber = null) => {
     try {
-      await foreshadowingDao.markResolved(id, resolvedInChapterId)
+      await foreshadowingDao.markResolved(id, resolvedInChapterId, resolvedInChapterNumber)
       message.success('伏笔已标记为回收！')
       return true
     } catch (err) {
@@ -149,7 +149,7 @@ export function useForeshadowing() {
           id: f.id,
           content: f.content,
           importance: f.importance,
-          plantedIn: f.chapterId,
+          plantedIn: f.plantedInChapter || f.chapterId,
           relatedCharacters: f.relatedCharacters || [],
           notes: f.notes || ''
         })),
@@ -708,7 +708,7 @@ export function useForeshadowing() {
 
         // 如果关键词匹配度超过50%，认为伏笔已回收
         if (keywords.length > 0 && matchCount / keywords.length >= 0.5) {
-          await foreshadowingDao.markResolved(fs.id, chapterId)
+          await foreshadowingDao.markResolved(fs.id, chapterId, chapter.chapterNumber)
           resolved.push(fs)
         }
       }

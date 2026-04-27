@@ -6,10 +6,7 @@ import { useNovel } from '@/composables/useNovel'
 import { useChapter, useChapterExport } from '@/composables/useChapter'
 import { useAI } from '@/composables/useAI'
 import { useCoherenceScore } from '@/composables/useCoherenceScore'
-import { useStructuredSummary } from '@/composables/useStructuredSummary'
-import { useCharacter } from '@/composables/useCharacter'
-import { useForeshadowing } from '@/composables/useForeshadowing'
-import { useOutline } from '@/composables/useOutline'
+import { processChapter } from '@/utils/chapterPostProcessor'
 import { buildChapterRegenerationPrompt } from '@/utils/prompts'
 import PageHeader from '@/components/common/PageHeader.vue'
 
@@ -20,12 +17,6 @@ const { novel, loadNovel } = useNovel()
 const { chapter, chapters, loading: chapterLoading, loadChapter, loadChapters, updateChapter, deleteChapter, getPrevNextChapter } = useChapter()
 const { exportChapter } = useChapterExport()
 const { generate, loading: generating, checkApiKey } = useAI()
-
-// 连贯性评分
-const { scoring, scoreResult, suggestions, runCoherenceScore, scoringDimensions } = useCoherenceScore()
-
-// 结构化摘要
-const { generateStructuredSummary } = useStructuredSummary()
 
 // 后处理状态
 const postProcessing = ref(false)
@@ -161,119 +152,27 @@ const handleCoherenceScore = async () => {
  */
 const handleReprocess = async () => {
   if (!chapter.value || !novel.value) return
-  
+
   postProcessing.value = true
   postProcessResults.value = null
-  
-  const results = {
-    structuredSummary: { success: false, error: null },
-    foreshadowing: { success: false, error: null, count: 0 },
-    characterAppearance: { success: false, error: null, count: 0 },
-    characterStatus: { success: false, error: null },
-    foreshadowingResolution: { success: false, error: null, count: 0 },
-    timeline: { success: false, error: null, count: 0 },
-    characterChanges: { success: false, error: null, count: 0 },
-    newForeshadowing: { success: false, error: null, count: 0 }
-  }
-  
-  const novelId = novel.value.id
-  const chapterId = chapter.value.id
-  const content = chapter.value.content
-  const chapterNumber = chapter.value.chapterNumber
 
   try {
-    // 1. 生成结构化摘要
-    try {
-      const structuredSummary = await generateStructuredSummary(
-        { content, chapterNumber },
-        novel.value,
-        generate
-      )
-      if (structuredSummary) {
-        results.structuredSummary.success = true
-        console.log('结构化摘要生成完成:', structuredSummary)
-      }
-    } catch (err) {
-      results.structuredSummary.error = err.message
-      console.warn('生成结构化摘要失败:', err)
-    }
-
-    // 2. 提取新伏笔
-    try {
-      const { extractFromChapter } = useForeshadowing()
-      const newForeshadowings = await extractFromChapter(content, chapterId, novelId)
-      if (newForeshadowings && newForeshadowings.length > 0) {
-        results.foreshadowing.success = true
-        results.foreshadowing.count = newForeshadowings.length
-      } else {
-        results.foreshadowing.success = true
-      }
-    } catch (err) {
-      results.foreshadowing.error = err.message
-      console.warn('提取伏笔失败:', err)
-    }
-
-    // 3. 更新角色出场记录
-    try {
-      const { updateAppearancesFromContent } = useCharacter()
-      const appearedCharacters = await updateAppearancesFromContent(content, chapterId, novelId)
-      if (appearedCharacters && appearedCharacters.length > 0) {
-        results.characterAppearance.success = true
-        results.characterAppearance.count = appearedCharacters.length
-      } else {
-        results.characterAppearance.success = true
-      }
-    } catch (err) {
-      results.characterAppearance.error = err.message
-      console.warn('更新角色出场记录失败:', err)
-    }
-
-    // 4. 更新角色状态
-    try {
-      const { updateStatusesFromContent } = useCharacter()
-      await updateStatusesFromContent(content, chapterId, novelId)
-      results.characterStatus.success = true
-    } catch (err) {
-      results.characterStatus.error = err.message
-      console.warn('更新角色状态失败:', err)
-    }
-
-    // 5. 检查伏笔回收
-    try {
-      const { checkForeshadowingResolution } = useForeshadowing()
-      const resolvedForeshadowings = await checkForeshadowingResolution(content, novelId, chapterId)
-      if (resolvedForeshadowings && resolvedForeshadowings.length > 0) {
-        results.foreshadowingResolution.success = true
-        results.foreshadowingResolution.count = resolvedForeshadowings.length
-      } else {
-        results.foreshadowingResolution.success = true
-      }
-    } catch (err) {
-      results.foreshadowingResolution.error = err.message
-      console.warn('检查伏笔回收失败:', err)
-    }
-
-    // 6. 记录时间线事件
-    try {
-      const { recordTimelineEvents } = useOutline()
-      const eventCount = await recordTimelineEvents(content, chapterId, novelId)
-      if (eventCount && eventCount > 0) {
-        results.timeline.success = true
-        results.timeline.count = eventCount
-      } else {
-        results.timeline.success = true
-      }
-    } catch (err) {
-      results.timeline.error = err.message
-      console.warn('记录时间线事件失败:', err)
-    }
+    const results = await processChapter({
+      novel: novel.value,
+      chapter: {
+        id: chapter.value.id,
+        content: chapter.value.content,
+        chapterNumber: chapter.value.chapterNumber,
+        title: chapter.value.title || ''
+      },
+      callAI: generate
+    })
 
     postProcessResults.value = results
-    
-    // 统计成功/失败数量
+
     const successCount = Object.values(results).filter(r => r.success).length
     const failedCount = Object.values(results).filter(r => !r.success).length
-    
+
     if (failedCount === 0) {
       message.success(`后处理完成，全部 ${successCount} 项成功`)
     } else {
@@ -428,10 +327,10 @@ onMounted(() => {
                     {{ postProcessResults.structuredSummary.success ? '成功' : '失败' }}
                   </a-tag>
                 </div>
-                <div class="result-item" :class="{ success: postProcessResults.foreshadowing.success, failed: !postProcessResults.foreshadowing.success }">
+                <div class="result-item" :class="{ success: postProcessResults.foreshadowingExtract.success, failed: !postProcessResults.foreshadowingExtract.success }">
                   <span class="result-name">伏笔提取</span>
-                  <a-tag :color="postProcessResults.foreshadowing.success ? 'success' : 'error'">
-                    {{ postProcessResults.foreshadowing.success ? `成功 (${postProcessResults.foreshadowing.count}个)` : '失败' }}
+                  <a-tag :color="postProcessResults.foreshadowingExtract.success ? 'success' : 'error'">
+                    {{ postProcessResults.foreshadowingExtract.success ? `成功 (${postProcessResults.foreshadowingExtract.count}个)` : '失败' }}
                   </a-tag>
                 </div>
                 <div class="result-item" :class="{ success: postProcessResults.characterAppearance.success, failed: !postProcessResults.characterAppearance.success }">

@@ -1,3 +1,11 @@
+<script>
+/**
+ * 模块级变量：页面刷新重置，SPA 路由切换保留
+ * 用于区分「页面刷新」和「菜单切换」两种场景
+ */
+const runningSessionIds = new Set()
+</script>
+
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -6,10 +14,8 @@ import { useBackgroundTask } from '@/composables/useBackgroundTask'
 import { useNovel } from '@/composables/useNovel'
 import { useChapter } from '@/composables/useChapter'
 import { useAI } from '@/composables/useAI'
-import { useStructuredSummary } from '@/composables/useStructuredSummary'
-import { useCharacter } from '@/composables/useCharacter'
-import { useForeshadowing } from '@/composables/useForeshadowing'
-import { useOutline } from '@/composables/useOutline'
+import { processChapter } from '@/utils/chapterPostProcessor'
+import { useFullNovelGeneration } from '@/composables/useFullNovelGeneration'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { eventBus, EVENTS } from '@/utils/eventBus'
 
@@ -50,6 +56,36 @@ const filterType = ref('all')
 const showPendingModal = ref(false)
 const pendingTasksList = ref([])
 
+// 模块级变量：SPA 内路由切换不销毁，页面刷新则重新初始化
+// 刷新中断的任务
+const showStaleRunningModal = ref(false)
+const staleRunningTasks = ref([])
+
+const handleStaleRunningTasks = async () => {
+  const allTasks = tasks.value
+  // runningSessionIds 是模块级变量，页面刷新会重置为空 Set，
+  // SPA 路由切换则保留已有 ID，从而区分两种场景
+  const staleTasks = allTasks.filter(t => t.status === TASK_STATUS.RUNNING && !runningSessionIds.has(t.id))
+  if (staleTasks.length === 0) return
+
+  for (const task of staleTasks) {
+    await updateTask(task.id, {
+      status: TASK_STATUS.FAILED,
+      error: '页面刷新导致任务中断，请重试'
+    })
+  }
+
+  staleRunningTasks.value = staleTasks.map(t => ({
+    ...t,
+    status: TASK_STATUS.FAILED,
+    error: '页面刷新导致任务中断，请重试'
+  }))
+  showStaleRunningModal.value = true
+
+  // 刷新任务列表
+  await loadTasks()
+}
+
 // 当前正在执行的任务
 const runningTaskIds = ref(new Set())
 
@@ -63,7 +99,8 @@ const taskTypeNames = {
   [TASK_TYPES.SUMMARY_GENERATION]: '摘要生成',
   [TASK_TYPES.FORESHADOWING_EXTRACT]: '伏笔提取',
   [TASK_TYPES.CHARACTER_UPDATE]: '角色更新',
-  [TASK_TYPES.TIMELINE_RECORD]: '时间线记录'
+  [TASK_TYPES.TIMELINE_RECORD]: '时间线记录',
+  [TASK_TYPES.FULL_NOVEL_GENERATION]: '全本生成'
 }
 
 // 任务状态颜色映射
@@ -138,7 +175,10 @@ const executeTask = async (task) => {
   
   try {
     await updateTask(task.id, { status: TASK_STATUS.RUNNING })
-    
+    const idx = tasks.value.findIndex(t => t.id === task.id)
+    if (idx !== -1) tasks.value[idx] = { ...tasks.value[idx], status: TASK_STATUS.RUNNING }
+    runningSessionIds.add(task.id)
+
     // 根据任务类型执行不同逻辑
     let result = null
     
@@ -148,6 +188,9 @@ const executeTask = async (task) => {
         break
       case TASK_TYPES.BATCH_CHAPTER_PROCESS:
         result = await executeBatchChapterProcess(task)
+        break
+      case TASK_TYPES.FULL_NOVEL_GENERATION:
+        result = await executeFullNovelGeneration(task)
         break
       default:
         result = { success: true }
@@ -175,6 +218,7 @@ const executeTask = async (task) => {
     message.error('任务执行失败：' + err.message)
   } finally {
     runningTaskIds.value.delete(task.id)
+    runningSessionIds.delete(task.id)
     await loadTasks()
   }
 }
@@ -183,116 +227,26 @@ const executeTask = async (task) => {
 const executeChapterPostProcess = async (task) => {
   try {
     const { novelId, chapterId, chapterNumber } = task.data
-    
-    // 加载小说和章节数据
+
     await loadNovel(novelId)
     await loadChapter(novelId, chapterNumber)
-    
+
     if (!chapter.value || !novel.value) {
       return { success: false, error: '找不到章节或小说数据' }
     }
-    
-    const content = chapter.value.content
-    const results = {
-      structuredSummary: { success: false, error: null },
-      foreshadowing: { success: false, error: null, count: 0 },
-      characterAppearance: { success: false, error: null, count: 0 },
-      characterStatus: { success: false, error: null },
-      foreshadowingResolution: { success: false, error: null, count: 0 },
-      timeline: { success: false, error: null, count: 0 }
-    }
-    
-    // 1. 生成结构化摘要
-    try {
-      const { generateStructuredSummary } = useStructuredSummary()
-      const structuredSummary = await generateStructuredSummary(
-        { content, chapterNumber },
-        novel.value,
-        generate
-      )
-      if (structuredSummary) {
-        results.structuredSummary.success = true
-      }
-    } catch (err) {
-      results.structuredSummary.error = err.message
-    }
-    
-    // 2. 提取伏笔
-    try {
-      const { extractFromChapter } = useForeshadowing()
-      const newForeshadowings = await extractFromChapter(content, chapterId, novelId)
-      if (newForeshadowings && newForeshadowings.length > 0) {
-        results.foreshadowing.success = true
-        results.foreshadowing.count = newForeshadowings.length
-      } else {
-        results.foreshadowing.success = true
-      }
-    } catch (err) {
-      results.foreshadowing.error = err.message
-    }
-    
-    // 3. 更新角色出场
-    try {
-      const { updateAppearancesFromContent } = useCharacter()
-      const appearedCharacters = await updateAppearancesFromContent(content, chapterId, novelId)
-      if (appearedCharacters && appearedCharacters.length > 0) {
-        results.characterAppearance.success = true
-        results.characterAppearance.count = appearedCharacters.length
-      } else {
-        results.characterAppearance.success = true
-      }
-    } catch (err) {
-      results.characterAppearance.error = err.message
-    }
-    
-    // 4. 更新角色状态
-    try {
-      const { updateStatusesFromContent } = useCharacter()
-      await updateStatusesFromContent(content, chapterId, novelId)
-      results.characterStatus.success = true
-    } catch (err) {
-      results.characterStatus.error = err.message
-    }
-    
-    // 5. 检查伏笔回收
-    try {
-      const { checkForeshadowingResolution } = useForeshadowing()
-      const resolvedForeshadowings = await checkForeshadowingResolution(content, novelId, chapterId)
-      if (resolvedForeshadowings && resolvedForeshadowings.length > 0) {
-        results.foreshadowingResolution.success = true
-        results.foreshadowingResolution.count = resolvedForeshadowings.length
-      } else {
-        results.foreshadowingResolution.success = true
-      }
-    } catch (err) {
-      results.foreshadowingResolution.error = err.message
-    }
-    
-    // 6. 记录时间线事件
-    try {
-      const { recordTimelineEvents } = useOutline()
-      const eventCount = await recordTimelineEvents(content, chapterId, novelId)
-      if (eventCount && eventCount > 0) {
-        results.timeline.success = true
-        results.timeline.count = eventCount
-      } else {
-        results.timeline.success = true
-      }
-    } catch (err) {
-      results.timeline.error = err.message
-    }
-    
-    // 判断整体结果
-    const successCount = Object.values(results).filter(r => r.success).length
-    const totalCount = Object.values(results).length
-    
-    if (successCount === totalCount) {
-      return { success: true, data: results }
-    } else if (successCount > 0) {
-      return { success: true, data: results } // 部分成功也算成功
-    } else {
-      return { success: false, error: '所有处理项都失败', data: results }
-    }
+
+    const results = await processChapter({
+      novel: novel.value,
+      chapter: {
+        id: chapterId,
+        content: chapter.value.content,
+        chapterNumber,
+        title: chapter.value.title || ''
+      },
+      callAI: generate
+    })
+
+    return { success: true, data: results }
   } catch (err) {
     return { success: false, error: err.message }
   }
@@ -302,26 +256,63 @@ const executeChapterPostProcess = async (task) => {
 const executeBatchChapterProcess = async (task) => {
   try {
     const { chapterIds, novelId } = task.data
-    
+
     if (!chapterIds || chapterIds.length === 0) {
       return { success: false, error: '没有要处理的章节' }
     }
-    
+
+    await loadChapters(novelId)
+    const chapterMap = new Map(chapters.value.map(chapter => [chapter.id, chapter]))
     const results = []
-    
+
     for (const chapterId of chapterIds) {
+      const chapterRecord = chapterMap.get(chapterId)
+      if (!chapterRecord) {
+        throw new Error(`找不到章节 ${chapterId} 的数据`)
+      }
+
       // 创建单个章节后处理任务
       const subTaskId = await useBackgroundTask().createTask({
         type: TASK_TYPES.CHAPTER_POST_PROCESS,
         novelId,
         chapterId,
-        data: { novelId, chapterId }
+        chapterNumber: chapterRecord.chapterNumber,
+        data: {
+          novelId,
+          chapterId,
+          chapterNumber: chapterRecord.chapterNumber
+        }
       })
-      
-      results.push({ chapterId, taskId: subTaskId })
+
+      results.push({ chapterId, chapterNumber: chapterRecord.chapterNumber, taskId: subTaskId })
     }
-    
+
     return { success: true, data: { processedCount: results.length, tasks: results } }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+}
+
+// 执行全本生成
+const executeFullNovelGeneration = async (task) => {
+  const gen = useFullNovelGeneration()
+  try {
+    // 将进度持久化到任务数据
+    gen.setOnProgress(async (progress) => {
+      await updateTask(task.id, {
+        data: { ...task.data, progress }
+      })
+    })
+
+    await gen.start(task.data.novelId)
+
+    if (gen.phase.value === 'completed') {
+      return { success: true, data: { results: gen.results.value, progress: gen.progress.value } }
+    } else if (gen.phase.value === 'cancelled') {
+      return { success: true, data: { cancelled: true, results: gen.results.value } }
+    } else {
+      return { success: false, error: '生成未完成', data: { errors: gen.errors.value } }
+    }
   } catch (err) {
     return { success: false, error: err.message }
   }
@@ -391,6 +382,8 @@ const isTaskRunning = (taskId) => {
 
 onMounted(async () => {
   await loadTasks()
+  // 标记因页面刷新中断的 running 任务
+  await handleStaleRunningTasks()
   // 检查是否有待处理任务
   await checkPendingTasks()
   
@@ -447,6 +440,34 @@ const handleTaskCreated = async (task) => {
       <template #footer>
         <a-button @click="showPendingModal = false">稍后处理</a-button>
         <a-button type="primary" @click="executeAllPending">立即执行</a-button>
+      </template>
+    </a-modal>
+
+    <!-- 刷新中断的任务提醒 -->
+    <a-modal
+      v-model:open="showStaleRunningModal"
+      title="⚠️ 任务中断提醒"
+      :closable="false"
+      :maskClosable="false"
+      width="600px"
+    >
+      <div class="pending-tasks-info">
+        <a-alert type="warning" show-icon style="margin-bottom: 16px">
+          <template #message>
+            检测到 {{ staleRunningTasks.length }} 个任务因页面刷新而中断，已自动标记为失败，可重新执行。
+          </template>
+        </a-alert>
+
+        <div class="pending-tasks-list">
+          <div v-for="task in staleRunningTasks" :key="task.id" class="pending-task-item">
+            <span class="task-type">{{ taskTypeNames[task.type] || task.type }}</span>
+            <span class="task-time">{{ formatTime(task.createdAt) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <a-button type="primary" @click="showStaleRunningModal = false">知道了</a-button>
       </template>
     </a-modal>
 
@@ -526,7 +547,7 @@ const handleTaskCreated = async (task) => {
           { title: '类型', dataIndex: 'type', key: 'type', width: 120 },
           { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
           { title: '关联小说', key: 'novel', width: 150 },
-          { title: '关联章节', key: 'chapter', width: 100 },
+          { title: '进度', key: 'progress', width: 180 },
           { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 160 },
           { title: '更新时间', dataIndex: 'updatedAt', key: 'updatedAt', width: 160 },
           { title: '操作', key: 'actions', width: 200 }
@@ -550,10 +571,21 @@ const handleTaskCreated = async (task) => {
             </a>
             <span v-else>-</span>
           </template>
-          <template v-else-if="column.key === 'chapter'">
-            <a v-if="record.chapterNumber" @click="goToChapter(record.novelId, record.chapterNumber)">
-              第{{ record.chapterNumber }}章
-            </a>
+          <template v-else-if="column.key === 'progress'">
+            <template v-if="record.type === TASK_TYPES.FULL_NOVEL_GENERATION && record.data?.progress">
+              <a-progress
+                :percent="record.data.progress.percent"
+                :status="record.status === 'failed' ? 'exception' : (record.status === 'completed' ? 'success' : 'active')"
+                size="small"
+                :format="() => `${record.data.progress.completedChapters}/${record.data.progress.totalChapters}章`"
+                style="width: 140px"
+              />
+            </template>
+            <template v-else-if="record.chapterNumber">
+              <a @click="goToChapter(record.novelId, record.chapterNumber)">
+                第{{ record.chapterNumber }}章
+              </a>
+            </template>
             <span v-else>-</span>
           </template>
           <template v-else-if="column.key === 'createdAt' || column.key === 'updatedAt'">

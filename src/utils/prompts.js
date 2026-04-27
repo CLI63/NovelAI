@@ -216,6 +216,9 @@ export const prompts = {
    */
   foreshadowingExtraction: `你是一位资深的小说编辑，擅长分析和识别小说中的伏笔。请仔细分析提供的章节内容，提取其中埋设的伏笔。
 
+【核心原则】：
+**宁缺毋滥。只提取真正重要的长线伏笔，数量越少越好。如果一章中提取超过5个伏笔，说明标准太松了。**
+
 【伏笔识别标准】：
 1. 悬念性伏笔：暗示未来事件、留下疑问、引起读者好奇
 2. 角色伏笔：角色身份的秘密、隐藏的能力、潜在的关系
@@ -230,6 +233,9 @@ export const prompts = {
 - 区分伏笔和普通情节推进
 - 只提取**跨章节**的伏笔，本章节内已回收的伏笔不提取（如悬念在本章已揭晓，则不应作为伏笔记录）
 - 提取的伏笔应该是埋设后需要在未来章节中回收的，而非本章已经完成的
+- **关键过滤规则**：如果某个伏笔属于"小伏笔"（即在3章以内就能回收的短期伏笔），则**不提取**。只提取需要较长时间（超过3章）才能揭晓或回收的重要伏笔。
+- **不提取**以下类型的小伏笔：日常对话中的随口一提、角色要去某个地方做某事的简单预告、章节结尾的小悬念（下章即揭晓）、过渡性的情节铺垫。
+- 只有对主线剧情或重要角色发展有**持续影响**的伏笔才值得提取。
 
 请严格按照以下JSON格式返回结果（不要添加任何额外文字）：
 {
@@ -237,25 +243,25 @@ export const prompts = {
     {
       "content": "伏笔的具体内容描述（简洁明了，20-50字）",
       "type": "伏笔类型（suspense/character/item/environment/dialogue/plot）",
-      "importance": "重要性（high/medium/low）",
+      "importance": "重要性（high/medium）",
       "description": "伏笔的详细说明（包括为什么这是伏笔，可能的回收方向）",
       "suggestedResolution": "建议的回收方式（50-100字）",
-      "suggestedChapterRange": "建议回收章节范围（如：5-10章后）",
+      "suggestedChapterRange": "建议回收章节范围（如：10章后、卷末）",
       "relatedCharacters": ["相关角色名称"],
       "keywords": ["关键词"]
     }
   ]
 }
 
-如果章节中没有明显的伏笔，返回：
+如果章节中没有重要的长线伏笔，返回：
 {
   "foreshadowings": []
 }
 
 【重要性判断标准】：
-- high：对主线剧情有重大影响，必须在后续回收
-- medium：对支线剧情或角色发展有影响
-- low：细节伏笔，可选回收
+- high：对主线剧情有重大影响（如核心谜团、角色真实身份、关键物品来历），10章以上才回收
+- medium：对支线剧情或角色发展有重要影响，3章以上才回收
+- 如果是"low"级别的小细节伏笔，直接不提取
 
 章节内容：`,
 }
@@ -444,13 +450,17 @@ export function buildChapterGenerationPrompt(
     })
   }
 
+  const startChapterNumber = recentChapters.length > 0
+    ? Math.max(...recentChapters.map(ch => Number(ch.chapterNumber) || 0)) + 1
+    : 1
+
   // 生成要求
   let generationRequirements = prompts.chapterGeneration + '\n'
   generationRequirements += `========================================\n`
   generationRequirements += `【本次生成任务】\n`
   generationRequirements += `- 生成章节数量：${chapterCount}章\n`
   generationRequirements += `- 每章字数范围：${minWords}-${maxWords}字\n`
-  generationRequirements += `- 章节编号从${recentChapters.length + 1}开始\n`
+  generationRequirements += `- 章节编号从${startChapterNumber}开始\n`
   generationRequirements += `========================================\n\n`
 
   generationRequirements += `【字数硬性要求 - 请务必遵守】\n`
@@ -602,7 +612,9 @@ export function buildStreamChapterPrompt(
   minWords,
   maxWords,
   chapterNumber,
-  enhancedContext = null
+  enhancedContext = null,
+  narrativePhase = null,
+  totalChapters = null
 ) {
   const messages = []
 
@@ -686,8 +698,23 @@ export function buildStreamChapterPrompt(
 
   // 生成要求
   let generationRequirements = `【本次任务】\n`
-  generationRequirements += `- 撰写第${chapterNumber}章\n`
+  generationRequirements += `- 撰写第${chapterNumber}章`
+  if (totalChapters) {
+    generationRequirements += `（共${totalChapters}章）`
+  }
+  // 明确标注所属卷
+  const volCtx = getVolumeContext(chapterNumber, novel.outline)
+  if (volCtx) {
+    generationRequirements += `\n- 所属卷册：${volCtx.name}`
+  }
+  generationRequirements += `\n`
   generationRequirements += `- 字数要求：${minWords}-${maxWords}字\n\n`
+
+  // 叙事阶段指引
+  if (narrativePhase) {
+    generationRequirements += getNarrativePhaseGuidance(narrativePhase, chapterNumber, totalChapters, novel.outline) + '\n\n'
+  }
+
   generationRequirements += `【写作要求】\n`
   generationRequirements += `1. 第一行输出章节标题（不要带"第X章"，只要标题名称）\n`
   generationRequirements += `2. 从第二行开始输出正文内容\n`
@@ -800,6 +827,107 @@ function formatEnhancedContext(context) {
   }
 
   return contextText ? contextText : null
+}
+
+/**
+ * 获取章节所属卷的信息
+ * @param {number} chapterNumber
+ * @param {Array} outline - novel.outline 数组 [{ volume, chapters, summary }]
+ * @returns {Object|null} { name, progress, phase, isLast, summary }
+ */
+export function getVolumeContext(chapterNumber, outline) {
+  if (!outline?.length) return null
+  let accumulated = 0
+  for (const vol of outline) {
+    const volChapters = vol.chapters || 0
+    if (volChapters === 0) { accumulated++; continue }
+    const volStart = accumulated + 1
+    const volEnd = accumulated + volChapters
+    if (chapterNumber >= volStart && chapterNumber <= volEnd) {
+      const volProgress = (chapterNumber - volStart) / volChapters
+      let volPhase = 'development'
+      if (volProgress <= 0.1) volPhase = 'opening'
+      else if (volProgress <= 0.7) volPhase = 'development'
+      else if (volProgress <= 0.9) volPhase = 'climax'
+      else volPhase = 'ending'
+      return {
+        name: vol.volume,
+        progress: volProgress,
+        phase: volPhase,
+        isLast: vol === outline[outline.length - 1],
+        summary: vol.summary || ''
+      }
+    }
+    accumulated += volChapters
+  }
+  return null
+}
+
+/**
+ * 构建叙事阶段指引文本（含卷内 + 全书双层定位）
+ * @param {string} overallPhase - 全书阶段: opening | development | climax | ending
+ * @param {number} chapterNumber
+ * @param {number} totalChapters
+ * @param {Array} [outline] - novel.outline，用于卷内定位
+ * @returns {string}
+ */
+function getNarrativePhaseGuidance(overallPhase, chapterNumber, totalChapters, outline = null) {
+  const parts = []
+
+  // ---- 卷内定位 ----
+  const volumeCtx = getVolumeContext(chapterNumber, outline)
+  if (volumeCtx) {
+    const volGuides = {
+      opening: `【本卷「${volumeCtx.name}」·开篇】
+本章位于该卷的开篇位置，任务是展开本卷的故事舞台：
+- 引入本卷的新冲突、新目标或新势力
+- 出场本卷的关键角色
+- 为卷内后续剧情做铺垫和设定`,
+      development: `【本卷「${volumeCtx.name}」·发展】
+本章位于该卷的发展推进阶段：
+- 推进本卷内的核心事件和冲突
+- 深化角色在本卷中的成长或关系变化
+- 保持情节张力，适当埋设后续伏笔`,
+      climax: `【本卷「${volumeCtx.name}」·高潮】
+本章位于该卷的高潮段落，是本卷最紧张激烈的部分：
+- 本卷积累的矛盾集中爆发
+- 关键对决或重大转折事件
+- 给读者强烈的阅读冲击和情感共鸣`,
+      ending: `【本卷「${volumeCtx.name}」·收尾】
+本章位于该卷的收尾部分，需要为卷内事件做结：
+- 解决本卷的核心冲突，给出阶段性成果
+- 为重要角色在本卷的经历画上句号
+- 为下一卷埋设新的悬念或伏笔`
+    }
+    parts.push(volGuides[volumeCtx.phase] || volGuides.development)
+  }
+
+  // ---- 全书定位 ----
+  const overallGuides = {
+    opening: '【全书定位】本书整体处于开篇阶段，需要在各卷推进中逐步建立世界观和核心矛盾。',
+    development: '【全书定位】本书整体处于剧情展开阶段，主线在持续推进中，各卷形成各自的小高潮。',
+    climax: '【全书定位】本书进入全书高潮阶段，所有卷的铺垫都指向最终收束。',
+    ending: '【全书定位】本书进入收尾阶段，需要为全书做最终了结。'
+  }
+  parts.push(overallGuides[overallPhase] || overallGuides.development)
+
+  // ---- 全书结局特别要求 ----
+  if (chapterNumber === totalChapters) {
+    parts.push(`【全书结局特别要求】
+这是全书的最后一章！必须做到：
+- 为所有主要角色的故事画上句号
+- 主线冲突彻底解决，给出明确的结果
+- 已埋设的高优先级伏笔必须回收
+- 结局要有分量，让读者感到满足和回味
+- 可以留有适当的余韵或开放式结尾，但不可中途断掉`)
+  }
+
+  // 卷结局辅助提示（非全书结局但处于卷收尾阶段）
+  if (volumeCtx && volumeCtx.phase === 'ending' && chapterNumber < totalChapters) {
+    parts.push(`【卷末提示】本章是「${volumeCtx.name}」的收尾章节，注意做好本卷的阶段性总结，同时为后续卷留下合理的悬念或伏笔。`)
+  }
+
+  return parts.join('\n\n')
 }
 
 /**
@@ -1432,7 +1560,9 @@ export function buildChapterFromOutlinePrompt(
   minWords,
   maxWords,
   chapterNumber,
-  enhancedContext = null
+  enhancedContext = null,
+  narrativePhase = null,
+  totalChapters = null
 ) {
   const messages = []
 
@@ -1522,8 +1652,23 @@ export function buildChapterFromOutlinePrompt(
     })
   }
 
-  // 生成要求
-  let requirements = `【写作要求】\n`
+  // 叙事阶段指引
+  if (narrativePhase) {
+    requirements = `【本次任务】\n`
+    requirements += `- 撰写第${chapterNumber}章`
+    if (totalChapters) {
+      requirements += `（共${totalChapters}章）`
+    }
+    const volCtx = getVolumeContext(chapterNumber, novel.outline)
+    if (volCtx) {
+      requirements += `\n- 所属卷册：${volCtx.name}`
+    }
+    requirements += `\n- 字数要求：${minWords}-${maxWords}字\n\n`
+    requirements += getNarrativePhaseGuidance(narrativePhase, chapterNumber, totalChapters, novel.outline) + '\n\n'
+    requirements += `【写作要求】\n`
+  } else {
+    requirements = `【写作要求】\n`
+  }
   requirements += `1. 第一行输出章节标题（不要带"第X章"）\n`
   requirements += `2. 从第二行开始输出正文内容\n`
   requirements += `3. 严格按照大纲的情节发展撰写\n`

@@ -325,7 +325,7 @@ export const providerConfigs = {
     name: 'DeepSeek',
     url: 'https://api.deepseek.com/v1/chat/completions',
     defaultModel: 'deepseek-chat',
-    temperature: 1.5,
+    temperature: 1.0,
   },
   doubao: {
     name: '豆包',
