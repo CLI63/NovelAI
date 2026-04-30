@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch, toRef } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, toRef } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import { useNovel } from '@/composables/useNovel'
@@ -258,6 +258,10 @@ onMounted(() => {
   loadSettings()
   loadData()
   document.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown)
 })
 </script>
 

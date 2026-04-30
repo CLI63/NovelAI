@@ -3,7 +3,7 @@
  * 章节列表组件
  * 用于展示小说的章节列表，支持分页、操作和批量后处理
  */
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useBackgroundTask } from '@/composables/useBackgroundTask'
 import { eventBus, EVENTS } from '@/utils/eventBus'
@@ -29,8 +29,7 @@ const {
   TASK_TYPES, 
   TASK_STATUS,
   createTask,
-  getChapterPostProcessStatus,
-  hasSuccessfulPostProcess
+  getChapterPostProcessStatus
 } = useBackgroundTask()
 
 // 选中的章节
@@ -208,6 +207,12 @@ const handleDelete = (record) => {
   emit('delete', record)
 }
 
+function handleTaskStatusEvent(task) {
+  if (!task?.chapterId) return
+  if (!props.chapters.some(chapter => chapter.id === task.chapterId)) return
+  loadPostProcessStatus()
+}
+
 const formatDate = (dateStr) => {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleString('zh-CN', {
@@ -244,6 +249,17 @@ watch(() => props.chapters, () => {
 
 onMounted(() => {
   loadPostProcessStatus()
+  eventBus.on(EVENTS.TASK_CREATED, handleTaskStatusEvent)
+  eventBus.on(EVENTS.TASK_STATUS_CHANGED, handleTaskStatusEvent)
+  eventBus.on(EVENTS.TASK_EXECUTED, handleTaskStatusEvent)
+  eventBus.on(EVENTS.TASK_FAILED, handleTaskStatusEvent)
+})
+
+onUnmounted(() => {
+  eventBus.off(EVENTS.TASK_CREATED, handleTaskStatusEvent)
+  eventBus.off(EVENTS.TASK_STATUS_CHANGED, handleTaskStatusEvent)
+  eventBus.off(EVENTS.TASK_EXECUTED, handleTaskStatusEvent)
+  eventBus.off(EVENTS.TASK_FAILED, handleTaskStatusEvent)
 })
 </script>
 

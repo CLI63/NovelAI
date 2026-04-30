@@ -635,7 +635,7 @@ const doSaveStreamChapter = async () => {
         const taskId = await createBackgroundTask(taskData)
         console.log('已创建章节后处理任务，ID:', taskId)
         
-        // 发送事件通知任务中心自动执行
+        // 发送事件通知全局后台面板自动执行
         eventBus.emit(EVENTS.TASK_CREATED, { id: taskId, ...taskData })
       } catch (err) {
         console.warn('创建后处理任务失败:', err)

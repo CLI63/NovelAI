@@ -349,6 +349,7 @@ export function useFullNovelGeneration() {
   function cancel() {
     cancelled.value = true
     paused.value = false
+    phase.value = 'cancelled'
     if (resumeResolver) {
       resumeResolver()
       resumeResolver = null

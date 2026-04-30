@@ -12,7 +12,7 @@
  *   7. 应用结构化摘要中的角色变化
  *   8. 记录结构化摘要中的新伏笔
  */
-import { characterDao, foreshadowingDao, plotLineDao, outlineEventDao } from './dao'
+import { characterDao, foreshadowingDao, timelineEventDao } from './dao'
 import { buildStructuredSummaryPrompt } from '@/composables/useStructuredSummary'
 import { updateBibleAfterChapter } from './novelBible'
 
@@ -64,9 +64,10 @@ export async function processChapter(ctx) {
   // ===== 2. AI 提取新伏笔 =====
   try {
     const newForeshadowings = await extractForeshadowing(content, chapterId, novelId, callAI, chapter.title, chapterNumber)
-    if (newForeshadowings.length > 0) {
+    const savedCount = await persistExtractedForeshadowings(newForeshadowings, novelId, chapterId)
+    if (savedCount > 0) {
       results.foreshadowingExtract.success = true
-      results.foreshadowingExtract.count = newForeshadowings.length
+      results.foreshadowingExtract.count = savedCount
     } else {
       results.foreshadowingExtract.success = true
     }
@@ -131,9 +132,15 @@ export async function processChapter(ctx) {
     let changeCount = 0
     for (const change of structuredSummary.characterChanges) {
       try {
-        if (change.characterId) {
-          await characterDao.update(change.characterId, {
-            notes: change.change
+        const characterId = await resolveCharacterId(change, novelId)
+        if (characterId) {
+          const current = await characterDao.getById(characterId)
+          const nextNotes = [current?.notes, `${change.type || 'status'}：${change.change}`]
+            .filter(Boolean)
+            .join('\n')
+          await characterDao.update(characterId, {
+            ...current,
+            notes: nextNotes
           })
           changeCount++
         }
@@ -202,6 +209,31 @@ async function extractForeshadowing(content, chapterId, novelId, callAI, title, 
   } catch {
     return []
   }
+}
+
+async function persistExtractedForeshadowings(items, novelId, chapterId) {
+  if (!Array.isArray(items) || items.length === 0) return 0
+
+  let savedCount = 0
+  for (const item of items) {
+    const content = String(item?.content || '').trim()
+    if (!content) continue
+
+    await foreshadowingDao.add({
+      novelId,
+      chapterId,
+      content,
+      type: item.type || 'planted',
+      importance: item.importance || 'medium',
+      description: item.description || '',
+      relatedCharacters: Array.isArray(item.relatedCharacters) ? item.relatedCharacters : [],
+      keywords: Array.isArray(item.keywords) ? item.keywords : extractKeywords(content),
+      status: 'pending'
+    })
+    savedCount++
+  }
+
+  return savedCount
 }
 
 /**
@@ -297,15 +329,6 @@ async function checkForeshadowingResolution(content, novelId, chapterId, chapter
  * 记录时间线事件
  */
 async function recordTimelineEvents(content, chapterId, chapterNumber, novelId) {
-  let mainPlotLine = await plotLineDao.getMainPlotLine(novelId)
-  if (!mainPlotLine) {
-    const plotLineId = await plotLineDao.add({
-      novelId, name: '主线剧情', type: 'main',
-      description: '小说主线剧情', color: '#1890ff', order: 0
-    })
-    mainPlotLine = await plotLineDao.getById(plotLineId)
-  }
-
   const allChars = await characterDao.getByNovelId(novelId)
   const sentences = content.split(/[。！？\n]+/).filter(s => s.trim().length > 10)
   let createdCount = 0
@@ -314,16 +337,29 @@ async function recordTimelineEvents(content, chapterId, chapterNumber, novelId) 
     const hasChar = allChars.some(c => sentence.includes(c.name))
     if (!hasChar) continue
 
-    await outlineEventDao.add({
-      plotLineId: mainPlotLine.id, chapterId,
+    await timelineEventDao.add({
+      novelId,
+      chapterId,
+      chapterNumber,
       title: sentence.trim().slice(0, 30) + '...',
-      content: sentence.trim(), order: createdCount,
-      chapterNumber
+      content: sentence.trim(),
+      order: createdCount
     })
     createdCount++
   }
 
   return createdCount
+}
+
+async function resolveCharacterId(change, novelId) {
+  if (change.characterId) return change.characterId
+
+  const characterName = String(change.character || '').trim()
+  if (!characterName) return null
+
+  const characters = await characterDao.getByNovelId(novelId)
+  const matched = characters.find(item => item.name === characterName)
+  return matched?.id || null
 }
 
 // ============ 工具函数 ============

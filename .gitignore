@@ -28,3 +28,6 @@ coverage
 
 *.tsbuildinfo
 /.claude*
+/dist*
+/.audit_py*
+/.audit-chrome-profile*

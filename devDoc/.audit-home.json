@@ -1,0 +1,10 @@
+{
+  "title": "Novel-AI",
+  "url": "http://127.0.0.1:5173/",
+  "body": "AI小说生成器\n小说列表\n灵感工作台\n写作工具\n设置\nv2.0.0\nAI创作平台\n小说列表\n创作者\n📚\n小说列表\n\n管理和查看您的AI生成小说\n\n0\n部小说\n列表\n卡片\n创建新小说\n\n暂无小说，快去创作您的第一部作品吧！\n\n立即创建",
+  "console": [
+    "debug: [vite] connecting...",
+    "debug: [vite] connected."
+  ],
+  "errors": []
+}

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, reactive, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useNovel } from '@/composables/useNovel'
@@ -10,8 +10,7 @@ import { useCharacterRelation } from '@/composables/useCharacterRelation'
 import { buildNovelOverviewPrompt } from '@/utils/prompts'
 import PageHeader from '@/components/common/PageHeader.vue'
 import NovelForm from '@/components/novel/NovelForm.vue'
-import FullGenerationProgress from '@/components/chapter/FullGenerationProgress.vue'
-import { useFullNovelGeneration } from '@/composables/useFullNovelGeneration'
+import { useGlobalFullNovelGeneration } from '@/composables/useGlobalFullNovelGeneration'
 
 const router = useRouter()
 
@@ -66,9 +65,12 @@ onMounted(() => {
 })
 
 // 全本一键生成
-const showFullGenModal = ref(false)
-const fullGen = reactive(useFullNovelGeneration())
 const fullGenPrompt = ref('')  // 全本生成自定义提示词
+const {
+  fullGen,
+  start: startFullGeneration,
+  isRunning: isFullGenRunning
+} = useGlobalFullNovelGeneration()
 
 // 支线剧情计算属性
 const subPlotLines = computed({
@@ -266,17 +268,12 @@ const handleSaveAndFullGenerate = async () => {
     message.success(`已自动创建 ${relationCount} 个角色关系`)
   }
 
-  // 打开进度弹窗，开始全本生成
-  showFullGenModal.value = true
+  message.info('全本生成已在后台开始，您可以继续使用页面其他功能')
 
   try {
-    await fullGen.start(id, fullGenPrompt.value)
-    // 生成完成后自动跳转到阅读器
-    if (fullGen.phase.value === 'completed') {
-      message.success(`全本生成完成，章节后处理将在后台继续执行。共 ${fullGen.results.value.length} 章`)
-      showFullGenModal.value = false
-      fullGen.reset()
-      router.push(`/reader/${id}`)
+    await startFullGeneration(id, fullGenPrompt.value)
+    if (fullGen.phase === 'completed') {
+      message.success(`全本生成完成，章节后处理将在后台继续执行。共 ${fullGen.results.length} 章`)
     }
   } catch (error) {
     console.error('全本生成失败:', error)
@@ -294,6 +291,7 @@ const handleBack = () => {
   generatedOverview.value = null
   currentStep.value = 0
 }
+
 </script>
 
 <template>
@@ -408,50 +406,15 @@ const handleBack = () => {
             size="large"
             ghost
             class="btn-full-gen"
+            :disabled="isFullGenRunning"
             @click="handleSaveAndFullGenerate"
           >
-            🚀 保存并一键生成全本
+            {{ isFullGenRunning ? '全本生成中' : '保存并一键生成全本' }}
           </a-button>
         </a-space>
       </div>
     </template>
   </div>
-
-  <!-- 全本生成进度弹窗 -->
-  <a-modal
-    v-model:open="showFullGenModal"
-    title="🚀 全本自动生成"
-    :footer="null"
-    :closable="fullGen.phase === 'completed' || fullGen.phase === 'error' || fullGen.phase === 'cancelled'"
-    :mask-closable="false"
-    :destroy-on-close="true"
-    width="720px"
-    class="full-gen-modal"
-  >
-    <FullGenerationProgress
-      :phase="fullGen.phase"
-      :progress="fullGen.progress"
-      :errors="fullGen.errors"
-      :results="fullGen.results"
-      :paused="fullGen.paused"
-      @pause="fullGen.pause"
-      @resume="fullGen.resume"
-      @cancel="fullGen.cancel"
-    />
-
-    <!-- 关闭按钮（仅在完成后显示） -->
-    <div
-      v-if="fullGen.phase === 'completed' || fullGen.phase === 'error' || fullGen.phase === 'cancelled'"
-      class="modal-footer-actions"
-    >
-      <a-button
-        type="primary"
-        @click="showFullGenModal = false; fullGen.reset()"
-      >
-        {{ fullGen.phase === 'completed' ? '完成' : '关闭' }}
-      </a-button>
-    </div>
-  </a-modal>
 </template>
 
 <style scoped>
@@ -580,14 +543,4 @@ const handleBack = () => {
   color: #667eea;
 }
 
-.modal-footer-actions {
-  display: flex;
-  justify-content: center;
-  padding-top: 8px;
-}
-
-.full-gen-modal :deep(.ant-modal-body) {
-  max-height: 70vh;
-  overflow-y: auto;
-}
 </style>

@@ -109,6 +109,45 @@ export function useBackgroundTask() {
   }
 
   /**
+   * 获取所有执行中的任务
+   * @returns {Promise<Array>} 执行中任务列表
+   */
+  const getRunningTasks = async () => {
+    const runningTasks = await db.backgroundTasks
+      .where('status')
+      .equals(TASK_STATUS.RUNNING)
+      .toArray()
+    return runningTasks
+  }
+
+  /**
+   * 恢复被页面刷新或会话中断打断的任务
+   * @param {Object} options - 恢复选项
+   * @returns {Promise<Array>} 被恢复的任务列表
+   */
+  const recoverInterruptedTasks = async (options = {}) => {
+    const { taskTypes = null } = options
+    const runningTasks = await getRunningTasks()
+    const interruptedTasks = Array.isArray(taskTypes) && taskTypes.length > 0
+      ? runningTasks.filter(task => taskTypes.includes(task.type))
+      : runningTasks
+
+    for (const task of interruptedTasks) {
+      await db.backgroundTasks.update(task.id, {
+        status: TASK_STATUS.PENDING,
+        error: null,
+        updatedAt: new Date().toISOString()
+      })
+    }
+
+    return interruptedTasks.map(task => ({
+      ...task,
+      status: TASK_STATUS.PENDING,
+      error: null
+    }))
+  }
+
+  /**
    * 获取指定小说的所有任务
    * @param {number} novelId - 小说ID
    * @returns {Promise<Array>} 任务列表
@@ -270,6 +309,8 @@ export function useBackgroundTask() {
     ensureChapterPostProcessTask,
     updateTask,
     getPendingTasks,
+    getRunningTasks,
+    recoverInterruptedTasks,
     getTasksByNovel,
     getTasksByChapter,
     getAllTasks,
