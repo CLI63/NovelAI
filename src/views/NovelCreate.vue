@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useNovel } from '@/composables/useNovel'
@@ -7,7 +7,17 @@ import { useAI } from '@/composables/useAI'
 import { useCharacter } from '@/composables/useCharacter'
 import { useForeshadowing } from '@/composables/useForeshadowing'
 import { useCharacterRelation } from '@/composables/useCharacterRelation'
+import { inspirationDao } from '@/utils/dao'
 import { buildNovelOverviewPrompt } from '@/utils/prompts'
+import {
+  INSPIRATION_BATCH_SIZE,
+  INSPIRATION_HISTORY_LIMIT,
+  buildNovelInspirationPrompt,
+  createInspirationConstraints,
+  filterUniqueInspirations,
+  parseInspirationResponse,
+  summarizeInspirationBatch,
+} from '@/utils/novelInspiration'
 import PageHeader from '@/components/common/PageHeader.vue'
 import NovelForm from '@/components/novel/NovelForm.vue'
 import { useGlobalFullNovelGeneration } from '@/composables/useGlobalFullNovelGeneration'
@@ -16,37 +26,56 @@ const router = useRouter()
 
 const { createNovel, sanitizeForDB } = useNovel()
 const { generate, loading: generating, checkApiKey } = useAI()
+const { generate: generateInspiration } = useAI()
 
 const idea = ref('')
 const generatedOverview = ref(null)
 const feedback = ref('')
 const currentStep = ref(0)
+const pendingInspirationSourceIds = ref([])
 
 // AI 随机灵感
 const inspirations = ref([])
 const loadingInspirations = ref(false)
+const recentInspirationBatches = ref([])
 
 const generateInspirations = async () => {
   if (!checkApiKey()) return
   loadingInspirations.value = true
   try {
-    const messages = [
-      {
-        role: 'system',
-        content: '你是一个创意写作助手。根据用户可能感兴趣的主题，生成小说创作灵感。每个灵感包含简洁标题和50字左右的描述，风格多样。直接返回JSON数组，不要用markdown代码块包裹。'
-      },
-      {
-        role: 'user',
-        content: '请生成6个不同风格的小说创作灵感，涵盖修仙、科幻、都市、奇幻、悬疑、历史等不同题材。每个灵感包含 title（标题，2-8字）和 description（描述，30-60字）。返回格式：[{"title": "灵感标题", "description": "灵感描述"}]'
-      }
-    ]
-    const response = await generate(messages)
-    if (response) {
-      const jsonMatch = response.match(/\[[\s\S]*\]/)
-      if (jsonMatch) {
-        inspirations.value = JSON.parse(jsonMatch[0])
+    const nextBatch = []
+    const historyItems = recentInspirationBatches.value.flat()
+    const recentSummaries = recentInspirationBatches.value
+      .flatMap(batch => summarizeInspirationBatch(batch))
+
+    // 最多补齐 3 轮，避免 AI 偶发重复或返回数量不足时污染卡片列表。
+    for (let attempt = 0; attempt < 3 && nextBatch.length < INSPIRATION_BATCH_SIZE; attempt += 1) {
+      const remainingCount = INSPIRATION_BATCH_SIZE - nextBatch.length
+      const messages = buildNovelInspirationPrompt({
+        constraints: createInspirationConstraints(remainingCount),
+        recentSummaries,
+        count: remainingCount,
+      })
+      // 灵感生成使用独立 AI 实例，避免联动“生成概览”的加载状态。
+      const response = await generateInspiration(messages, { temperature: 1.25 })
+      const parsed = parseInspirationResponse(response)
+      const uniqueItems = filterUniqueInspirations(parsed, [...historyItems, ...nextBatch])
+
+      if (uniqueItems.length > 0) {
+        nextBatch.push(...uniqueItems.slice(0, remainingCount))
       }
     }
+
+    if (nextBatch.length < INSPIRATION_BATCH_SIZE) {
+      message.error('AI返回的灵感数量不足，请重试')
+      return
+    }
+
+    inspirations.value = nextBatch.slice(0, INSPIRATION_BATCH_SIZE)
+    recentInspirationBatches.value = [
+      [...inspirations.value],
+      ...recentInspirationBatches.value,
+    ].slice(0, INSPIRATION_HISTORY_LIMIT)
   } catch (e) {
     console.error('生成灵感失败:', e)
     message.error('生成灵感失败，请重试')
@@ -59,10 +88,46 @@ const selectInspiration = (insp) => {
   idea.value = `${insp.title}：${insp.description}`
 }
 
+const loadPendingNovelOverview = () => {
+  const pending = sessionStorage.getItem('pendingNovelOverview')
+  if (!pending) return false
+
+  try {
+    const parsed = JSON.parse(pending)
+    if (!parsed?.overview) return false
+
+    // 从灵感工作台跳转过来时，直接进入概览编辑页继续创建小说。
+    generatedOverview.value = parsed.overview
+    pendingInspirationSourceIds.value = Array.isArray(parsed.sourceIds) ? parsed.sourceIds : []
+    currentStep.value = 1
+    message.success('已载入灵感生成的小说概览')
+    return true
+  } catch {
+    message.warning('灵感概览数据读取失败，请重新生成')
+    return false
+  } finally {
+    sessionStorage.removeItem('pendingNovelOverview')
+  }
+}
+
 // 进入页面时自动加载灵感
 onMounted(() => {
+  if (loadPendingNovelOverview()) return
   generateInspirations()
 })
+
+onActivated(() => {
+  loadPendingNovelOverview()
+})
+
+const markPendingInspirationsCompleted = async () => {
+  const ids = pendingInspirationSourceIds.value.filter(Boolean)
+  if (!ids.length) return
+
+  // 从灵感工作台创建小说后，同步把来源灵感标记为已完成。
+  await Promise.all(ids.map(id => inspirationDao.markAsCompleted(id)))
+  pendingInspirationSourceIds.value = []
+}
 
 // 全本一键生成
 const fullGenPrompt = ref('')  // 全本生成自定义提示词
@@ -175,6 +240,8 @@ const handleSave = async () => {
 
   const id = await createNovel(novel)
   if (id) {
+    await markPendingInspirationsCompleted()
+
     // 自动创建角色
     const { createFromNovelOverview } = useCharacter()
     const characterCount = await createFromNovelOverview(id, generatedOverview.value)
@@ -240,6 +307,8 @@ const handleSaveAndFullGenerate = async () => {
   const id = await createNovel(novel)
   if (!id) return
 
+  await markPendingInspirationsCompleted()
+
   // 自动创建角色
   const { createFromNovelOverview } = useCharacter()
   const characterCount = await createFromNovelOverview(id, generatedOverview.value)
@@ -283,7 +352,7 @@ const handleSaveAndFullGenerate = async () => {
 
 // 取消创建
 const handleCancel = () => {
-  router.push('/')
+  router.push('/novels')
 }
 
 // 返回第一步
@@ -314,11 +383,11 @@ const handleBack = () => {
         </p>
         <a-button
           class="inspire-btn"
-          ghost
           :loading="loadingInspirations"
           @click="generateInspirations"
         >
-          🔄 换一批
+          <template v-if="loadingInspirations">加载中</template>
+          <template v-else>🔄 换一批</template>
         </a-button>
 
         <div v-if="inspirations.length > 0" class="inspirations-grid">
@@ -453,6 +522,23 @@ const handleBack = () => {
 
 .inspire-btn {
   margin-bottom: var(--spacing-md);
+  min-width: 128px;
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+  background: #ffffff;
+  font-weight: 500;
+}
+
+.inspire-btn :deep(span),
+.inspire-btn :deep(.anticon) {
+  color: inherit;
+}
+
+.inspire-btn:hover,
+.inspire-btn:focus-visible {
+  color: var(--primary-color-dark);
+  border-color: var(--primary-color-dark);
+  background: rgba(102, 126, 234, 0.06);
 }
 
 .inspirations-grid {

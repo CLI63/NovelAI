@@ -140,13 +140,16 @@ const handleBatchPostProcess = async () => {
   batchProcessing.value = true
   
   try {
+    // 显式复制一份章节 ID，避免把表格选择产生的响应式数组直接写入任务仓库。
+    const chapterIds = [...selectedRowKeys.value]
+
     // 创建批量处理任务
     const taskData = {
       type: TASK_TYPES.BATCH_CHAPTER_PROCESS,
       novelId: props.novelId,
       data: {
         novelId: props.novelId,
-        chapterIds: selectedRowKeys.value
+        chapterIds
       }
     }
     const taskId = await createTask(taskData)

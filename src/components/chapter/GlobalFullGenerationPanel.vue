@@ -65,9 +65,13 @@ const totalWords = computed(() =>
   fullGen.results.reduce((sum, item) => sum + (item.wordCount || 0), 0)
 )
 
-const recentTaskItems = computed(() => recentTasks.value.slice(0, 4))
+// 任务面板需要展示当前已加载的全部任务，不能只截取前 4 条。
+const recentTaskItems = computed(() => recentTasks.value)
 const hasTaskActivity = computed(() =>
-  taskStats.value.pending > 0 || taskStats.value.running > 0 || taskStats.value.failed > 0
+  taskStats.value.pending > 0 ||
+  taskStats.value.running > 0 ||
+  taskStats.value.failed > 0 ||
+  taskStats.value.paused > 0
 )
 const panelVisible = computed(() => visible.value || hasTaskActivity.value)
 const hasFullGenerationState = computed(() =>
@@ -90,6 +94,16 @@ const collapsedSummary = computed(() => {
 const recentChapterSuccessCount = computed(() =>
   fullGen.results.filter(item => item.success).length
 )
+
+// 删除确认弹层需要显示在悬浮面板之上，避免被面板自身的层级遮挡。
+const taskDeletePopupStyle = {
+  zIndex: 1301
+}
+
+// 明确把弹层挂到 body，避免面板滚动容器或局部层叠上下文影响显示。
+function getTaskDeletePopupContainer() {
+  return document.body
+}
 
 function clampPosition() {
   const panelWidth = expanded.value ? 388 : 300
@@ -140,6 +154,30 @@ function toggleExpanded() {
 function goToReader() {
   if (!novelId.value) return
   router.push(`/reader/${novelId.value}`)
+}
+
+function getTaskProgress(task) {
+  return Number(task.result?.progress?.percent ?? task.data?.progress?.percent ?? task.progress ?? 0) || 0
+}
+
+function getTaskCurrentChapter(task) {
+  return task.result?.progress?.currentNumber ?? task.data?.progress?.currentNumber ?? task.chapterNumber
+}
+
+function getTaskTagColor(status) {
+  const map = {
+    [TASK_STATUS.COMPLETED]: 'success',
+    [TASK_STATUS.FAILED]: 'error',
+    [TASK_STATUS.RUNNING]: 'processing',
+    [TASK_STATUS.PAUSED]: 'warning',
+    [TASK_STATUS.PARTIAL]: 'warning'
+  }
+  return map[status] || 'default'
+}
+
+function canExecuteTask(task) {
+  return task.type !== 'batch_chapter_generation' &&
+    [TASK_STATUS.PENDING, TASK_STATUS.FAILED].includes(task.status)
 }
 
 async function handleCleanupTasks() {
@@ -313,6 +351,7 @@ onUnmounted(() => {
         <div class="task-chips">
           <span class="task-chip pending">待执行 {{ taskStats.pending }}</span>
           <span class="task-chip running">执行中 {{ taskStats.running }}</span>
+          <span class="task-chip paused">暂停 {{ taskStats.paused }}</span>
           <span class="task-chip failed">失败 {{ taskStats.failed }}</span>
         </div>
 
@@ -333,15 +372,18 @@ onUnmounted(() => {
                 <div class="task-name">{{ taskTypeNames[task.type] || task.type }}</div>
                 <div class="task-meta">
                   <span>#{{ task.id }}</span>
-                  <span v-if="task.chapterNumber">第{{ task.chapterNumber }}章</span>
+                  <span v-if="getTaskCurrentChapter(task)">第{{ getTaskCurrentChapter(task) }}章</span>
+                  <span v-if="task.type === 'batch_chapter_generation'">
+                    {{ task.result?.progress?.completedChapters ?? task.data?.progress?.completedChapters ?? 0 }}/{{ task.result?.progress?.totalChapters ?? task.data?.progress?.totalChapters ?? 0 }}章
+                  </span>
                 </div>
               </div>
               <div class="task-side">
-                <a-tag :color="task.status === TASK_STATUS.COMPLETED ? 'success' : task.status === TASK_STATUS.FAILED ? 'error' : task.status === TASK_STATUS.RUNNING ? 'processing' : 'default'">
+                <a-tag :color="getTaskTagColor(task.status)">
                   {{ statusNames[task.status] || task.status }}
                 </a-tag>
                 <a-button
-                  v-if="[TASK_STATUS.PENDING, TASK_STATUS.FAILED].includes(task.status)"
+                  v-if="canExecuteTask(task)"
                   type="link"
                   size="small"
                   :loading="runningTaskIds.has(task.id)"
@@ -353,6 +395,8 @@ onUnmounted(() => {
                   title="确定删除此任务吗？"
                   ok-text="删除"
                   cancel-text="取消"
+                  :overlay-style="taskDeletePopupStyle"
+                  :get-popup-container="getTaskDeletePopupContainer"
                   @confirm="handleRemoveTask(task.id)"
                 >
                   <a-button
@@ -365,6 +409,14 @@ onUnmounted(() => {
                   </a-button>
                 </a-popconfirm>
               </div>
+              <a-progress
+                v-if="task.type === 'batch_chapter_generation'"
+                class="task-progress"
+                :percent="getTaskProgress(task)"
+                size="small"
+                :show-info="false"
+                :status="task.status === TASK_STATUS.FAILED ? 'exception' : task.status === TASK_STATUS.COMPLETED ? 'success' : 'active'"
+              />
             </div>
           </div>
           <div v-else class="task-empty">暂无后台任务</div>
@@ -493,6 +545,7 @@ width: 90%;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
 }
 
 .panel-card {
@@ -610,6 +663,7 @@ width: 90%;
 .task-section {
   background:
     linear-gradient(180deg, rgba(248, 250, 252, 0.92) 0%, rgba(255, 255, 255, 0.88) 100%);
+  min-height: 0;
 }
 
 .task-summary {
@@ -639,6 +693,11 @@ width: 90%;
   color: #0f766e;
 }
 
+.task-chip.paused {
+  background: #fefce8;
+  color: #a16207;
+}
+
 .task-chip.failed {
   background: #fef2f2;
   color: #b91c1c;
@@ -653,15 +712,24 @@ width: 90%;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .task-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   padding: 10px;
   border-radius: 10px;
   border: 1px solid rgba(148, 163, 184, 0.12);
   background: rgba(255, 255, 255, 0.78);
   align-items: flex-start;
+}
+
+.task-progress {
+  grid-column: 1 / -1;
 }
 
 .task-main {

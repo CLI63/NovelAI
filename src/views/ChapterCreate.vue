@@ -5,9 +5,6 @@ import { message, Modal } from 'ant-design-vue'
 import { useNovel, useNovelStats } from '@/composables/useNovel'
 import { useChapter } from '@/composables/useChapter'
 import { useAI } from '@/composables/useAI'
-import { useGenerationQueue } from '@/composables/useGenerationQueue'
-import { useQualityCheck } from '@/composables/useQualityCheck'
-import { useResumeGeneration } from '@/composables/useResumeGeneration'
 import { useBackgroundTask } from '@/composables/useBackgroundTask'
 import { eventBus, EVENTS } from '@/utils/eventBus'
 import {
@@ -27,22 +24,8 @@ const route = useRoute()
 
 const { novel, loading: novelLoading, loadNovel } = useNovel()
 const { chapters, loadChapters, getRecentChapters, getChapterSummaries, createChapter, nextChapterNumber } = useChapter()
-const { createTask: createBackgroundTask, TASK_TYPES, updateTask: updateBackgroundTask, TASK_STATUS } = useBackgroundTask()
+const { createTask: createBackgroundTask, TASK_TYPES } = useBackgroundTask()
 const { generateStream, generate, checkApiKey } = useAI()
-
-// 生成任务队列
-const {
-  tasks,
-  loadTasks,
-  createTask,
-  updateTask,
-  startTask,
-  pauseTask,
-  resumeTask
-} = useGenerationQueue()
-
-// 质量检测
-const { runQualityCheck, getQualitySummary } = useQualityCheck()
 
 // 配置
 const minWords = ref(2000)
@@ -76,17 +59,8 @@ const outputCardRef = ref(null)
 // 保存章节状态
 const savingChapter = ref(false)
 
-// 批量生成状态
+// 批量任务只负责创建后台任务，实际进度由全局后台面板维护。
 const batchGenerating = ref(false)
-const batchProgress = ref(0)
-const batchCurrentChapter = ref(0)
-const batchResults = ref([])
-const batchPaused = ref(false)
-
-// 断点续写状态
-const { checkResumableTask, resumeGeneration, clearProgress } = useResumeGeneration()
-const resumableTask = ref(null)
-const showResumeModal = ref(false)
 
 // 统计
 const { progress } = useNovelStats(novel, chapters)
@@ -99,145 +73,7 @@ const loadData = async () => {
     await loadChapters(novel.value.id)
     minWords.value = parseInt(novel.value.chapterStructure.minWordsPerChapter) || 2000
     maxWords.value = parseInt(novel.value.chapterStructure.maxWordsPerChapter) || 3000
-    
-    // 检查是否有可恢复的批量生成任务
-    const resumable = await checkResumableTask(novel.value.id)
-    if (resumable) {
-      resumableTask.value = resumable
-      showResumeModal.value = true
-    }
   }
-}
-
-// 恢复批量生成
-const handleResumeTask = async () => {
-  if (!resumableTask.value) return
-  
-  showResumeModal.value = false
-  batchGenerating.value = true
-  batchPaused.value = false
-  
-  try {
-    const result = await resumeGeneration(
-      resumableTask.value.taskId,
-      async ({ startFromChapter, chapters, onProgress, onChapterComplete, onError }) => {
-        // 继续生成逻辑
-        for (let i = startFromChapter; i <= chapters.length && !batchPaused.value; i++) {
-          batchCurrentChapter.value = i
-          
-          try {
-            const chapterNum = chapters[i - 1].number
-            const recentChapters = await getRecentChapters(novel.value.id, 3)
-            const chapterSummaries = await getChapterSummaries(novel.value.id, 100)
-            const enhancedContext = await buildChapterContext(novel.value.id, chapterNum, {
-              recentChapterCount: 3,
-              summaryLimit: 50,
-              includeCharacterStatus: true,
-              includeForeshadowing: true,
-              includeTimeline: true
-            })
-            
-            const totalChapters = novel.value.chapterStructure?.totalChapters || 100
-            const progressRatio = (chapterNum - 1) / totalChapters
-            const strategy = getStrategyInfo(progressRatio, totalChapters)
-            
-            const messages = buildStreamChapterPrompt(
-              novel.value,
-              recentChapters,
-              chapterSummaries,
-              strategy.wordRange[0],
-              strategy.wordRange[1],
-              chapterNum,
-              enhancedContext
-            )
-            
-            let content = await generate(messages)
-            const lines = content.split('\n')
-            const title = lines.length > 0 ? lines[0].trim() : `第${chapterNum}章`
-            content = lines.slice(1).join('\n').trim()
-            
-            const summary = await generateSummary(content)
-            
-            const chapterData = {
-              novelId: novel.value.id,
-              chapterNumber: chapterNum,
-              title,
-              content,
-              summary,
-              wordCount: content.length
-            }
-            
-            const chapterId = await createChapter(chapterData, novel.value.outline)
-
-            if (chapterId) {
-              await afterChapterSave(chapterId, content, chapterNum)
-            }
-
-            if (onChapterComplete) {
-              await onChapterComplete(chapterNum, { content, title, wordCount: content.length })
-            }
-            
-            batchResults.value.push({
-              chapter: chapterNum,
-              success: true,
-              title,
-              wordCount: content.length
-            })
-            
-            await loadChapters(novel.value.id)
-            
-          } catch (error) {
-            if (onError) {
-              const action = await onError(i, error)
-              if (action === 'skip') {
-                batchResults.value.push({
-                  chapter: chapters[i - 1].number,
-                  success: false,
-                  error: error.message
-                })
-              }
-            }
-          }
-          
-          if (onProgress) {
-            onProgress(i)
-          }
-        }
-        
-        return true
-      },
-      {
-        onProgress: (current) => {
-          batchProgress.value = Math.round((current / resumableTask.value.chapterCount) * 100)
-        },
-        onChapterComplete: (chapterNum, data) => {
-          message.success(`第 ${chapterNum} 章生成完成`)
-        },
-        onError: (chapterNum, error) => {
-          message.error(`第 ${chapterNum} 章生成失败: ${error.message}`)
-        }
-      }
-    )
-    
-    if (result) {
-      message.success('批量生成恢复完成！')
-      await clearProgress(resumableTask.value.taskId)
-      resumableTask.value = null
-    }
-  } catch (error) {
-    message.error('恢复生成失败：' + error.message)
-  } finally {
-    batchGenerating.value = false
-  }
-}
-
-// 放弃恢复，开始新任务
-const handleDiscardResume = async () => {
-  if (resumableTask.value) {
-    await clearProgress(resumableTask.value.taskId)
-    resumableTask.value = null
-  }
-  showResumeModal.value = false
 }
 
 // 生成章节大纲
@@ -721,17 +557,13 @@ const handleBatchGenerate = async () => {
   if (!checkApiKey()) return
   
   batchGenerating.value = true
-  batchProgress.value = 0
-  batchCurrentChapter.value = 0
-  batchResults.value = []
-  batchPaused.value = false
   
   const totalChapters = novel.value.chapterStructure?.totalChapters || 100
   const startChapter = nextChapterNumber.value
   const endChapter = Math.min(startChapter + batchCount.value - 1, totalChapters)
   const totalToGenerate = endChapter - startChapter + 1
   
-  // 创建任务
+  // 固定本次批量任务的章节号列表，后台执行时不会再受 nextChapterNumber 变化影响。
   const chaptersToGenerate = []
   for (let i = startChapter; i <= endChapter; i++) {
     chaptersToGenerate.push({
@@ -743,178 +575,45 @@ const handleBatchGenerate = async () => {
       wordCount: 0
     })
   }
-  
-  const taskData = {
-    novelId: novel.value.id,
-    type: 'batch',
-    status: 'running',
-    chapters: chaptersToGenerate,
-    progress: 0,
-    options: {
-      minWords: minWords.value,
-      maxWords: maxWords.value,
-      useOutline: outlineMode.value,
-      autoSave: true
-    }
-  }
-  
-  const taskId = await createTask(taskData)
-  
-  try {
-    for (let i = startChapter; i <= endChapter && !batchPaused.value; i++) {
-      batchCurrentChapter.value = i
-      
-      // 更新任务状态
-      await updateTask(taskId, {
-        currentChapter: i,
-        chapters: taskData.chapters.map((c, idx) =>
-          idx === i - startChapter ? { ...c, status: 'generating' } : c
-        )
-      })
-      
-      // 获取策略
-      const progress = (i - 1) / totalChapters
-      const strategy = getStrategyInfo(progress, totalChapters)
-      
-      // 生成章节
-      const chapterNum = i
-      const chapterStartChapter = nextChapterNumber.value
-      
-      // 构建上下文
-      const recentChapters = await getRecentChapters(novel.value.id, 3)
-      const chapterSummaries = await getChapterSummaries(novel.value.id, 100)
-      const enhancedContext = await buildChapterContext(novel.value.id, chapterNum, {
-        recentChapterCount: 3,
-        summaryLimit: 50,
-        includeCharacterStatus: true,
-        includeForeshadowing: true,
-        includeTimeline: true
-      })
-      
-      // 生成内容
-      let content = ''
-      let title = `第${chapterNum}章`
-      let summary = ''
-      
-      try {
-        const messages = buildStreamChapterPrompt(
-          novel.value,
-          recentChapters,
-          chapterSummaries,
-          strategy.wordRange[0],
-          strategy.wordRange[1],
-          chapterNum,
-          enhancedContext
-        )
-        
-        content = await generate(messages)
-        
-        // 解析标题和内容
-        const lines = content.split('\n')
-        if (lines.length > 0) {
-          title = lines[0].trim()
-          content = lines.slice(1).join('\n').trim()
-        }
-        
-        // 生成总结
-        try {
-          summary = await generateSummary(content)
-        } catch (e) {
-          summary = content.slice(0, 200) + '...'
-        }
-        
-        // 质量检测
-        const qualityResult = await runQualityCheck(
-          { content, title, chapterNumber: chapterNum },
-          { minWords: strategy.wordRange[0], existingChapters: chapters.value }
-        )
-        
-        // 保存章节
-        const chapterData = {
-          novelId: novel.value.id,
-          chapterNumber: chapterNum,
-          title,
-          content,
-          summary,
-          wordCount: content.length
-        }
-        
-        const chapterId = await createChapter(chapterData, novel.value.outline)
-        
-        // 章节保存后处理（提取伏笔、更新角色等）
-        if (chapterId) {
-          await afterChapterSave(chapterId, content, chapterNum)
-        }
-        
-        batchResults.value.push({
-          chapter: chapterNum,
-          success: true,
-          title,
-          wordCount: content.length,
-          quality: qualityResult
-        })
-        
-        // 更新任务进度
-        taskData.chapters[i - startChapter] = {
-          number: chapterNum,
-          status: 'completed',
-          content,
-          title,
-          summary,
-          wordCount: content.length
-        }
-        
-      } catch (error) {
-        batchResults.value.push({
-          chapter: chapterNum,
-          success: false,
-          error: error.message
-        })
-        
-        taskData.chapters[i - startChapter] = {
-          number: chapterNum,
-          status: 'failed',
-          error: error.message
-        }
-      }
-      
-      batchProgress.value = Math.round(((i - startChapter + 1) / totalToGenerate) * 100)
-      
-      await updateTask(taskId, {
-        progress: batchProgress.value,
-        chapters: taskData.chapters
-      })
-      
-      // 重新加载章节列表
-      await loadChapters(novel.value.id)
-    }
-    
-    // 任务完成
-    await updateTask(taskId, {
-      status: batchPaused.value ? 'paused' : 'completed',
-      progress: 100,
-      completedAt: new Date().toISOString()
-    })
-    
-    if (!batchPaused.value) {
-      message.success(`批量生成完成！共生成 ${batchResults.value.filter(r => r.success).length} 章`)
-    }
-    
-  } catch (error) {
-    message.error('批量生成失败：' + error.message)
-    await updateTask(taskId, {
-      status: 'failed',
-      error: error.message
-    })
-  } finally {
-    batchGenerating.value = false
-  }
-}
 
-// 暂停批量生成
-const handlePauseBatch = () => {
-  batchPaused.value = true
-  message.info('正在暂停批量生成...')
+  const backgroundTaskData = {
+    type: TASK_TYPES.BATCH_CHAPTER_GENERATION,
+    novelId: novel.value.id,
+    data: {
+      novelId: novel.value.id,
+      startChapter,
+      endChapter,
+      totalToGenerate,
+      results: [],
+      chapters: chaptersToGenerate,
+      options: {
+        minWords: minWords.value,
+        maxWords: maxWords.value,
+        customPrompt: customPrompt.value,
+        autoSave: true
+      },
+      progress: {
+        totalChapters: totalToGenerate,
+        completedChapters: 0,
+        currentNumber: startChapter,
+        currentTitle: '',
+        currentContent: '',
+        currentPhase: 'generating',
+        percent: 0,
+        phase: 'chapters'
+      }
+    }
+  }
+  const backgroundTaskId = await createBackgroundTask(backgroundTaskData)
+  eventBus.emit(EVENTS.TASK_CREATED, {
+    id: backgroundTaskId,
+    ...backgroundTaskData,
+    status: 'pending'
+  })
+
+  message.info('批量生成已加入后台面板，您可以在详情页继续查看进度')
+  router.push(`/novel/${novel.value.id}`)
+  batchGenerating.value = false
 }
 
 // 返回
@@ -970,41 +669,6 @@ onMounted(() => {
 
 <template>
   <div class="chapter-create-page">
-    <!-- 断点续写恢复提示 -->
-    <a-modal
-      v-model:open="showResumeModal"
-      title="🔄 检测到未完成的批量生成任务"
-      :closable="false"
-      :maskClosable="false"
-      @ok="handleResumeTask"
-      @cancel="handleDiscardResume"
-    >
-      <div v-if="resumableTask" class="resume-info">
-        <a-alert type="info" show-icon style="margin-bottom: 16px">
-          <template #message>
-            发现一个未完成的批量生成任务，是否继续？
-          </template>
-        </a-alert>
-        <a-descriptions :column="2" size="small" bordered>
-          <a-descriptions-item label="任务状态">
-            <a-tag :color="resumableTask.status === 'paused' ? 'orange' : 'red'">
-              {{ resumableTask.status === 'paused' ? '已暂停' : '中断' }}
-            </a-tag>
-          </a-descriptions-item>
-          <a-descriptions-item label="进度">
-            {{ resumableTask.completedCount }} / {{ resumableTask.chapterCount }} 章
-          </a-descriptions-item>
-          <a-descriptions-item label="完成度" :span="2">
-            <a-progress :percent="resumableTask.progress" size="small" />
-          </a-descriptions-item>
-        </a-descriptions>
-      </div>
-      <template #footer>
-        <a-button @click="handleDiscardResume">放弃并重新开始</a-button>
-        <a-button type="primary" @click="handleResumeTask">继续生成</a-button>
-      </template>
-    </a-modal>
-
     <a-spin :spinning="novelLoading" size="large">
       <template v-if="novel">
         <!-- 页面头部 -->
@@ -1103,7 +767,7 @@ onMounted(() => {
                 />
               </a-form-item>
             </a-col>
-            <a-col :span="6">
+            <a-col v-if="generateMode !== 'batch'" :span="6">
               <a-form-item label="输出模式">
                 <a-switch
                   v-model:checked="streamMode"
@@ -1112,13 +776,12 @@ onMounted(() => {
                 />
               </a-form-item>
             </a-col>
-            <a-col :span="6">
+            <a-col v-if="generateMode !== 'batch'" :span="6">
               <a-form-item label="大纲预生成">
                 <a-switch
                   v-model:checked="outlineMode"
                   checked-children="开启"
                   un-checked-children="关闭"
-                  :disabled="generateMode === 'batch'"
                 />
               </a-form-item>
             </a-col>
@@ -1131,50 +794,6 @@ onMounted(() => {
             />
           </a-form-item>
           
-          <!-- 批量生成进度 -->
-          <template v-if="batchGenerating">
-            <a-card class="batch-progress-card" size="small">
-              <div class="batch-progress">
-                <div class="progress-header">
-                  <span>批量生成进度</span>
-                  <span>第 {{ batchCurrentChapter }} 章 / 共 {{ batchCount }} 章</span>
-                </div>
-                <a-progress :percent="batchProgress" status="active" />
-                <div class="batch-actions">
-                  <a-button
-                    type="primary"
-                    danger
-                    size="small"
-                    @click="handlePauseBatch"
-                    :disabled="batchPaused"
-                  >
-                    {{ batchPaused ? '正在暂停...' : '暂停生成' }}
-                  </a-button>
-                </div>
-              </div>
-            </a-card>
-          </template>
-          
-          <!-- 批量生成结果 -->
-          <template v-if="batchResults.length > 0 && !batchGenerating">
-            <a-card class="batch-results-card" size="small">
-              <template #title>
-                <span>生成结果</span>
-                <a-tag color="success">{{ batchResults.filter(r => r.success).length }} 成功</a-tag>
-                <a-tag v-if="batchResults.filter(r => !r.success).length > 0" color="error">
-                  {{ batchResults.filter(r => !r.success).length }} 失败
-                </a-tag>
-              </template>
-              <div class="results-list">
-                <div v-for="result in batchResults" :key="result.chapter" class="result-item">
-                  <span>第 {{ result.chapter }} 章</span>
-                  <a-tag v-if="result.success" color="success">{{ result.wordCount }} 字</a-tag>
-                  <a-tag v-else color="error">{{ result.error }}</a-tag>
-                </div>
-              </div>
-            </a-card>
-          </template>
-          
           <div class="generate-action">
             <!-- 批量生成模式 -->
             <template v-if="generateMode === 'batch'">
@@ -1185,7 +804,7 @@ onMounted(() => {
                 :disabled="batchGenerating"
                 @click="handleBatchGenerate"
               >
-                {{ batchGenerating ? `生成中 (${batchProgress}%)...` : `📚 批量生成 ${batchCount} 章` }}
+                {{ batchGenerating ? '已加入后台...' : `📚 批量生成 ${batchCount} 章` }}
               </a-button>
             </template>
             

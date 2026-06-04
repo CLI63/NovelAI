@@ -12,6 +12,7 @@ const db = new Dexie('NovelAIDB')
 // v7: 新增大纲表、剧情线表、大纲事件表
 // v8: 新增后台任务表，章节表添加后处理状态字段
 // v9: 新增小说圣经表，用于积累跨章节的结构化知识
+// v10: 为章节级联删除补充缺失索引，避免按 chapterId / resolvedIn 查询时报错
 db.version(8).stores({
   novels: '++id, title, createdAt, updatedAt',
   chapters: '++id, novelId, chapterNumber, createdAt, updatedAt',
@@ -61,6 +62,28 @@ db.version(9).stores({
   outlines: '++id, novelId, type, createdAt, updatedAt',
   plotLines: '++id, novelId, type, status, createdAt, updatedAt',
   outlineEvents: '++id, novelId, plotLineId, order, createdAt, updatedAt',
+  backgroundTasks: '++id, type, status, novelId, chapterId, createdAt, updatedAt',
+  novelBibles: '++id, novelId, updatedAt'
+})
+
+db.version(10).stores({
+  novels: '++id, title, createdAt, updatedAt',
+  chapters: '++id, novelId, chapterNumber, createdAt, updatedAt',
+  characters: '++id, novelId, name, type, createdAt, updatedAt',
+  characterRelations: '++id, novelId, sourceId, targetId, type, createdAt, updatedAt',
+  // 补充 chapterId、resolvedIn 索引，便于章节删除和伏笔状态回退。
+  foreshadowing: '++id, novelId, chapterId, resolvedIn, type, status, createdAt, updatedAt',
+  generationTasks: '++id, novelId, status, createdAt, updatedAt',
+  timelineEvents: '++id, novelId, chapterId, createdAt',
+  plotBranches: '++id, novelId, type, status, createdAt, updatedAt',
+  worldTemplates: '++id, category, createdAt, updatedAt',
+  inspirations: '++id, status, createdAt, updatedAt',
+  bookmarks: '++id, novelId, chapterId, createdAt',
+  annotations: '++id, novelId, chapterId, createdAt, updatedAt',
+  outlines: '++id, novelId, type, createdAt, updatedAt',
+  plotLines: '++id, novelId, type, status, createdAt, updatedAt',
+  // 补充 chapterId 索引，支持按章节安全清理大纲事件。
+  outlineEvents: '++id, novelId, plotLineId, chapterId, order, createdAt, updatedAt',
   backgroundTasks: '++id, type, status, novelId, chapterId, createdAt, updatedAt',
   novelBibles: '++id, novelId, updatedAt'
 })

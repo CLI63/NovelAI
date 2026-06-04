@@ -30,7 +30,7 @@ export function useNovel() {
       const data = await novelDao.getById(id)
       if (!data) {
         message.error('小说不存在')
-        router.push('/')
+        router.push('/novels')
         return null
       }
       novel.value = data
@@ -234,7 +234,7 @@ export function useNovel() {
    * 跳转到创建页
    */
   const goToCreate = () => {
-    router.push('/novel/create')
+    router.push('/')
   }
 
   return {

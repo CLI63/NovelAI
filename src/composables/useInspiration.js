@@ -9,6 +9,32 @@ import {
   buildInspirationScorePrompt
 } from '@/utils/prompts'
 
+const parseJsonObjectFromAI = (result) => {
+  const raw = String(result || '').trim()
+  if (!raw) {
+    throw new Error('AI 返回内容为空')
+  }
+
+  const candidates = [
+    raw,
+    raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim(),
+    raw.match(/\{[\s\S]*\}/)?.[0]?.trim()
+  ].filter(Boolean)
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed
+      }
+    } catch {
+      // 尝试下一个候选片段，兼容 AI 偶发包裹 markdown 的情况。
+    }
+  }
+
+  throw new Error('无法解析 AI 返回的概览')
+}
+
 /**
  * 灵感工作台组合式函数
  * 提供灵感管理、AI扩写、问答引导、多灵感融合、灵感评分等功能
@@ -250,18 +276,8 @@ export function useInspiration() {
       const messages = buildMultiInspirationMergePrompt(selectedInspirations)
       const result = await callAI(messages, config.provider, config.apiKey, config.model)
 
-      // 解析返回的小说概览 JSON
-      try {
-        const overview = JSON.parse(result)
-        return overview
-      } catch {
-        // 如果解析失败，尝试提取 JSON
-        const jsonMatch = result.match(/\{[\s\S]*\}/)
-        if (jsonMatch) {
-          return JSON.parse(jsonMatch[0])
-        }
-        throw new Error('无法解析 AI 返回的概览')
-      }
+      // 解析返回的小说概览 JSON，兼容纯 JSON、markdown 代码块和前后带说明文字的返回。
+      return parseJsonObjectFromAI(result)
     } catch (err) {
       error.value = err.message
       message.error('融合灵感失败：' + err.message)
@@ -320,7 +336,6 @@ export function useInspiration() {
   const saveExpandedContent = async (id, expandedContent) => {
     try {
       await inspirationDao.update(id, { expandedContent })
-      message.success('扩写内容已保存')
       return true
     } catch (err) {
       error.value = err.message

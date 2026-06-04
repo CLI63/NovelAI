@@ -6,22 +6,30 @@ const router = createRouter({
     {
       path: '/',
       name: 'home',
+      meta: { keepAlive: true },
+      component: () => import('../views/NovelCreate.vue'),
+    },
+    {
+      path: '/novels',
+      name: 'novelList',
+      meta: { keepAlive: true },
       component: () => import('../views/NovelList.vue'),
     },
     {
       path: '/inspiration',
       name: 'inspiration',
+      meta: { keepAlive: true },
       component: () => import('../views/InspirationWorkshop.vue'),
     },
     {
       path: '/tools',
       name: 'writingTools',
+      meta: { keepAlive: true },
       component: () => import('../views/WritingTools.vue'),
     },
     {
       path: '/novel/create',
-      name: 'novelCreate',
-      component: () => import('../views/NovelCreate.vue'),
+      redirect: '/',
     },
     {
       path: '/novel/:id',
@@ -61,6 +69,7 @@ const router = createRouter({
     {
       path: '/settings',
       name: 'settings',
+      meta: { keepAlive: true },
       component: () => import('../views/Settings.vue'),
     },
   ],

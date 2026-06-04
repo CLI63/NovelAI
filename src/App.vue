@@ -1,10 +1,11 @@
 <script setup>
+import { KeepAlive, ref, computed, watch } from 'vue'
 import { RouterView } from 'vue-router'
-import { ref, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {
   BookOutlined,
   BulbOutlined,
+  FormOutlined,
   ToolOutlined,
   SettingOutlined,
   MenuFoldOutlined,
@@ -24,7 +25,8 @@ const searchVisible = ref(false)
 const searchText = ref('')
 
 const menuItems = [
-  { key: '/', icon: BookOutlined, label: '小说列表' },
+  { key: '/', icon: FormOutlined, label: '小说创建' },
+  { key: '/novels', icon: BookOutlined, label: '小说列表' },
   { key: '/inspiration', icon: BulbOutlined, label: '灵感工作台' },
   { key: '/tools', icon: ToolOutlined, label: '写作工具' },
   { key: '/settings', icon: SettingOutlined, label: '设置' },
@@ -32,6 +34,18 @@ const menuItems = [
 
 const handleMenuClick = ({ key }) => {
   router.push(key)
+}
+
+const resolveMenuKey = (path) => {
+  if (path === '/' || path === '/novel/create') {
+    return '/'
+  }
+
+  if (path.startsWith('/novel/') || path.startsWith('/reader/')) {
+    return '/novels'
+  }
+
+  return path
 }
 
 const currentPageTitle = computed(() => {
@@ -42,11 +56,7 @@ const currentPageTitle = computed(() => {
 watch(
   route,
   (newRoute) => {
-    if (newRoute.path.startsWith('/novel/') || newRoute.path.startsWith('/reader/')) {
-      selectedKeys.value = ['/']
-    } else {
-      selectedKeys.value = [newRoute.path]
-    }
+    selectedKeys.value = [resolveMenuKey(newRoute.path)]
   },
   { immediate: true },
 )
@@ -176,9 +186,16 @@ watch(
       <!-- 内容区域 -->
       <a-layout-content class="app-content">
         <div class="content-wrapper">
-          <RouterView v-slot="{ Component }">
+          <RouterView v-slot="{ Component, route: viewRoute }">
             <transition name="page-fade" mode="out-in">
-              <component :is="Component" />
+              <KeepAlive v-if="viewRoute.meta.keepAlive" :max="5">
+                <component :is="Component" :key="String(viewRoute.name || viewRoute.path)" />
+              </KeepAlive>
+              <component
+                v-else
+                :is="Component"
+                :key="viewRoute.fullPath"
+              />
             </transition>
           </RouterView>
         </div>

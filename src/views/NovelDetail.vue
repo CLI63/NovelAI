@@ -226,7 +226,7 @@ const loadData = async () => {
 
 // 处理删除小说
 const handleDeleteNovel = () => {
-  deleteNovel(novel.value.id, () => router.push('/'))
+  deleteNovel(novel.value.id, () => router.push('/novels'))
 }
 
 // 处理导出
@@ -253,7 +253,7 @@ const handleDeleteChapter = (chapter) => {
 
 // 返回列表
 const handleBack = () => {
-  router.push('/')
+  router.push('/novels')
 }
 
 // 开始阅读

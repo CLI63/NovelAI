@@ -2,6 +2,23 @@ import { ref } from 'vue'
 import db from '@/utils/db'
 
 /**
+ * 清洗后台任务负载，避免把 Vue 响应式代理对象直接写入 IndexedDB，
+ * 导致 DataCloneError。
+ * @param {any} payload - 原始任务负载
+ * @returns {any} 可安全写入 IndexedDB 的普通数据
+ */
+function sanitizeBackgroundTaskPayload(payload) {
+  if (payload == null) return payload
+
+  try {
+    return JSON.parse(JSON.stringify(payload))
+  } catch (error) {
+    console.warn('后台任务负载清洗失败，已回退为安全默认值:', error)
+    return Array.isArray(payload) ? [] : {}
+  }
+}
+
+/**
  * 后台任务管理 composable
  * 用于管理所有静默任务（章节后处理、批量操作等）
  */
@@ -17,7 +34,8 @@ export function useBackgroundTask() {
     FORESHADOWING_EXTRACT: 'foreshadowing_extract', // 伏笔提取
     CHARACTER_UPDATE: 'character_update',           // 角色更新
     TIMELINE_RECORD: 'timeline_record',              // 时间线记录
-    FULL_NOVEL_GENERATION: 'full_novel_generation'   // 全本生成
+    FULL_NOVEL_GENERATION: 'full_novel_generation',  // 全本生成
+    BATCH_CHAPTER_GENERATION: 'batch_chapter_generation' // 批量章节生成
   }
 
   // 任务状态定义
@@ -26,7 +44,8 @@ export function useBackgroundTask() {
     RUNNING: 'running',       // 执行中
     COMPLETED: 'completed',   // 已完成
     FAILED: 'failed',         // 失败
-    PARTIAL: 'partial'        // 部分成功
+    PARTIAL: 'partial',       // 部分成功
+    PAUSED: 'paused'          // 已暂停
   }
 
   /**
@@ -35,7 +54,8 @@ export function useBackgroundTask() {
    * @returns {Promise<number>} 任务ID
    */
   const createTask = async (taskData) => {
-    const task = {
+    // 写库前统一转成普通对象，避免数组或对象仍带有 Vue Proxy。
+    const task = sanitizeBackgroundTaskPayload({
       type: taskData.type,
       status: TASK_STATUS.PENDING,
       novelId: taskData.novelId || null,
@@ -46,7 +66,7 @@ export function useBackgroundTask() {
       error: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
-    }
+    })
 
     const id = await db.backgroundTasks.add(task)
     return id
@@ -90,10 +110,11 @@ export function useBackgroundTask() {
    * @param {Object} updates - 更新数据
    */
   const updateTask = async (taskId, updates) => {
-    await db.backgroundTasks.update(taskId, {
+    // 更新任务时也做一次清洗，避免执行结果中的响应式对象再次写库失败。
+    await db.backgroundTasks.update(taskId, sanitizeBackgroundTaskPayload({
       ...updates,
       updatedAt: new Date().toISOString()
-    })
+    }))
   }
 
   /**
@@ -248,7 +269,8 @@ export function useBackgroundTask() {
       running: allTasks.filter(t => t.status === TASK_STATUS.RUNNING).length,
       completed: allTasks.filter(t => t.status === TASK_STATUS.COMPLETED).length,
       failed: allTasks.filter(t => t.status === TASK_STATUS.FAILED).length,
-      partial: allTasks.filter(t => t.status === TASK_STATUS.PARTIAL).length
+      partial: allTasks.filter(t => t.status === TASK_STATUS.PARTIAL).length,
+      paused: allTasks.filter(t => t.status === TASK_STATUS.PAUSED).length
     }
   }
 

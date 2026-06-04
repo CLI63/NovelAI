@@ -9,11 +9,7 @@ import {
   FileTextOutlined,
   QuestionCircleOutlined,
   BarChartOutlined,
-  LinkOutlined,
   BookOutlined,
-  SaveOutlined,
-  DeleteOutlined,
-  CheckCircleOutlined,
   InboxOutlined,
   ArrowLeftOutlined,
   BulbOutlined,
@@ -36,6 +32,7 @@ const router = useRouter()
 const {
   inspirations,
   loading,
+  error,
   expandingContent,
   isExpanding,
   isScoring,
@@ -52,7 +49,7 @@ const {
   batchDelete
 } = useInspiration()
 
-const { generate, loading: generating, checkApiKey } = useAI()
+const { checkApiKey, currentProvider, getApiKey, getCurrentModel } = useAI()
 const { createNovel, sanitizeForDB } = useNovel()
 
 // 当前步骤
@@ -90,6 +87,25 @@ const filterStatus = ref('all')
 // 标签输入
 const tagInput = ref('')
 
+// 统一读取当前 AI 配置，避免页面直接读取过期的 localStorage 字段。
+const getCurrentAiConfig = () => ({
+  provider: currentProvider.value,
+  apiKey: getApiKey(),
+  model: getCurrentModel()
+})
+
+const goToNovelCreateWithOverview = (overview, sourceIds = []) => {
+  if (!overview) return
+
+  // 用会话缓存把灵感生成的概览交给创建页，避免在两个页面维护两套小说编辑流程。
+  sessionStorage.setItem('pendingNovelOverview', JSON.stringify({
+    overview,
+    source: 'inspiration',
+    sourceIds
+  }))
+  router.push('/')
+}
+
 // 筛选后的灵感列表
 const filteredInspirations = computed(() => {
   let list = inspirations.value
@@ -105,6 +121,7 @@ const filteredInspirations = computed(() => {
     list = list.filter(item =>
       item.title?.toLowerCase().includes(keyword) ||
       item.content?.toLowerCase().includes(keyword) ||
+      item.expandedContent?.toLowerCase().includes(keyword) ||
       item.tags?.some(tag => tag.toLowerCase().includes(keyword))
     )
   }
@@ -160,6 +177,19 @@ const handleSaveInspiration = async () => {
   }
 }
 
+// 保存编辑中的灵感
+const handleSaveEditingInspiration = async () => {
+  if (!editingInspiration.value?.id) return
+
+  // 提交前先深拷贝一份普通对象，避免把响应式对象直接传给数据层。
+  const payload = sanitizeForDB(editingInspiration.value) || {}
+  const success = await updateInspiration(editingInspiration.value.id, payload)
+
+  if (success) {
+    handleBack()
+  }
+}
+
 // 编辑灵感
 const handleEdit = (inspiration) => {
   editingInspiration.value = { ...inspiration }
@@ -173,11 +203,7 @@ const handleExpand = async (inspiration) => {
   editingInspiration.value = inspiration
   currentStep.value = 2
 
-  await expandInspiration(inspiration, {
-    provider: localStorage.getItem('aiProvider') || 'deepseek',
-    apiKey: localStorage.getItem('apiKey') || '',
-    model: localStorage.getItem('aiModel') || ''
-  })
+  await expandInspiration(inspiration, getCurrentAiConfig())
 }
 
 // 保存扩写结果
@@ -188,6 +214,8 @@ const handleSaveExpanded = async () => {
   if (success) {
     // 更新编辑中的灵感
     editingInspiration.value.expandedContent = expandingContent.value
+    await loadInspirations()
+    message.success('扩写结果已保存到该灵感卡片')
   }
 }
 
@@ -198,11 +226,7 @@ const handleQA = async (inspiration) => {
   editingInspiration.value = inspiration
   currentStep.value = 3
 
-  const result = await askQuestion(inspiration, {
-    provider: localStorage.getItem('aiProvider') || 'deepseek',
-    apiKey: localStorage.getItem('apiKey') || '',
-    model: localStorage.getItem('aiModel') || ''
-  })
+  const result = await askQuestion(inspiration, getCurrentAiConfig())
 
   if (result) {
     qaResult.value = result
@@ -216,11 +240,7 @@ const handleScore = async (inspiration) => {
   editingInspiration.value = inspiration
   currentStep.value = 4
 
-  const result = await scoreInspiration(inspiration, {
-    provider: localStorage.getItem('aiProvider') || 'deepseek',
-    apiKey: localStorage.getItem('apiKey') || '',
-    model: localStorage.getItem('aiModel') || ''
-  })
+  const result = await scoreInspiration(inspiration, getCurrentAiConfig())
 
   if (result) {
     scoreResult.value = result
@@ -250,15 +270,12 @@ const handleMerge = async () => {
 
   currentStep.value = 5
 
-  const result = await mergeInspirations(selectedInspirations.value, {
-    provider: localStorage.getItem('aiProvider') || 'deepseek',
-    apiKey: localStorage.getItem('apiKey') || '',
-    model: localStorage.getItem('aiModel') || ''
-  })
+  const result = await mergeInspirations(selectedInspirations.value, getCurrentAiConfig())
 
   if (result) {
     generatedOverview.value = result
     message.success('融合成功！')
+    goToNovelCreateWithOverview(result, selectedInspirations.value.map(item => item.id).filter(Boolean))
   }
 }
 
@@ -270,15 +287,12 @@ const handleGenerateFromInspiration = async (inspiration) => {
   currentStep.value = 5
 
   // 使用灵感融合功能（单个灵感也可以）
-  const result = await mergeInspirations([inspiration], {
-    provider: localStorage.getItem('aiProvider') || 'deepseek',
-    apiKey: localStorage.getItem('apiKey') || '',
-    model: localStorage.getItem('aiModel') || ''
-  })
+  const result = await mergeInspirations([inspiration], getCurrentAiConfig())
 
   if (result) {
     generatedOverview.value = result
     message.success('概览生成成功！')
+    goToNovelCreateWithOverview(result, inspiration?.id ? [inspiration.id] : [])
   }
 }
 
@@ -340,6 +354,13 @@ const handleBack = () => {
   scoreResult.value = null
   generatedOverview.value = null
   selectedInspirations.value = []
+}
+
+// 查看已保存的扩写结果
+const handleViewExpanded = (inspiration) => {
+  editingInspiration.value = { ...inspiration }
+  expandingContent.value = inspiration.expandedContent || ''
+  currentStep.value = 2
 }
 
 // 获取状态颜色
@@ -481,7 +502,7 @@ const getStatusText = (status) => {
           <a-button
             type="primary"
             :disabled="selectedInspirations.length < 2"
-            :loading="generating"
+            :loading="loading"
             @click="handleMerge"
           >
             开始融合
@@ -512,6 +533,15 @@ const getStatusText = (status) => {
               </a-tag>
             </div>
             <p class="insp-content">{{ insp.content }}</p>
+            <div v-if="insp.expandedContent" class="expanded-preview">
+              <div class="expanded-preview-header">
+                <span>已保存扩写</span>
+                <a-button type="link" size="small" @click="handleViewExpanded(insp)">
+                  查看
+                </a-button>
+              </div>
+              <p>{{ insp.expandedContent }}</p>
+            </div>
             <div class="card-tags">
               <a-tag v-for="tag in (insp.tags || [])" :key="tag" size="small">{{ tag }}</a-tag>
               <a-tag v-if="insp.style" size="small" color="blue">{{ insp.style }}</a-tag>
@@ -580,6 +610,12 @@ const getStatusText = (status) => {
           :rows="6"
           placeholder="灵感内容"
         />
+        <a-textarea
+          v-if="editingInspiration.expandedContent"
+          v-model:value="editingInspiration.expandedContent"
+          :rows="8"
+          placeholder="AI扩写结果"
+        />
         <div class="tags-section">
           <div class="tags-input">
             <a-tag
@@ -605,7 +641,7 @@ const getStatusText = (status) => {
         </div>
         <div class="action-row">
           <a-button @click="handleBack">取消</a-button>
-          <a-button type="primary" @click="updateInspiration(editingInspiration.id, editingInspiration)">
+          <a-button type="primary" @click="handleSaveEditingInspiration">
             保存
           </a-button>
         </div>
@@ -828,7 +864,10 @@ const getStatusText = (status) => {
           </div>
         </div>
       </div>
-      <a-spin v-else :spinning="generating">
+      <div v-else-if="error && !loading" class="placeholder">
+        {{ error }}
+      </div>
+      <a-spin v-else :spinning="loading">
         <div class="placeholder">AI 正在生成概览...</div>
       </a-spin>
       <div class="action-row">
@@ -1042,6 +1081,36 @@ const getStatusText = (status) => {
   font-size: 14px;
   line-height: 1.6;
   margin-bottom: var(--spacing-sm);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.expanded-preview {
+  padding: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
+  background: #f6ffed;
+  border: 1px solid #d9f7be;
+  border-radius: var(--radius-sm);
+}
+
+.expanded-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-xs);
+  color: #389e0d;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.expanded-preview p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;

@@ -64,24 +64,44 @@ export const chapterDao = {
     const chapter = await db.chapters.get(id)
     if (!chapter) return false
 
+    // 统一的更新时间，确保级联修复后的关联数据时间戳一致。
+    const updatedAt = new Date().toISOString()
+
+    // 这些字段在旧版本库里没有索引，直接 where('field') 会导致 Dexie 抛出 SchemaError，
+    // 因此这里改为遍历集合后按字段过滤，保证老数据也能正常删除章节。
+    const deleteOutlineEventsByChapterId = db.outlineEvents
+      .toCollection()
+      .filter(event => event.chapterId === id)
+      .delete()
+
+    const deleteForeshadowingByChapterId = db.foreshadowing
+      .toCollection()
+      .filter(item => item.chapterId === id)
+      .delete()
+
+    const resetResolvedForeshadowing = db.foreshadowing
+      .toCollection()
+      .filter(item => item.resolvedIn === id)
+      .modify({
+        status: 'pending',
+        resolvedIn: null,
+        resolvedInChapterNumber: null,
+        updatedAt
+      })
+
     await Promise.all([
       db.backgroundTasks.where('chapterId').equals(id).delete(),
       db.bookmarks.where('chapterId').equals(id).delete(),
       db.annotations.where('chapterId').equals(id).delete(),
-      db.outlineEvents.where('chapterId').equals(id).delete(),
-      db.foreshadowing.where('chapterId').equals(id).delete(),
-      db.foreshadowing.where('resolvedIn').equals(id).modify({
-        status: 'pending',
-        resolvedIn: null,
-        resolvedInChapterNumber: null,
-        updatedAt: new Date().toISOString()
-      }),
+      deleteOutlineEventsByChapterId,
+      deleteForeshadowingByChapterId,
+      resetResolvedForeshadowing,
       db.characters.toCollection().modify(character => {
         if (!Array.isArray(character.appearances)) return
         const nextAppearances = character.appearances.filter(item => item.chapterId !== id)
         if (nextAppearances.length !== character.appearances.length) {
           character.appearances = nextAppearances
-          character.updatedAt = new Date().toISOString()
+          character.updatedAt = updatedAt
         }
       }),
       db.timelineEvents.where('chapterId').equals(id).delete()
@@ -424,19 +444,78 @@ export const generationTaskDao = {
  * 灵感数据访问对象
  * 用于管理用户灵感的CRUD操作
  */
+/**
+ * 清洗灵感数据，避免把 Vue 响应式代理对象直接写入 IndexedDB，触发 DataCloneError。
+ * @param {Object} inspiration - 原始灵感数据
+ */
+const sanitizeInspirationPayload = (inspiration = {}) => {
+  let sanitizedInspiration = {}
+
+  try {
+    sanitizedInspiration = JSON.parse(JSON.stringify(inspiration || {}))
+  } catch {
+    sanitizedInspiration = {}
+  }
+
+  return sanitizedInspiration
+}
+
+const normalizeInspirationForCreate = (inspiration = {}) => {
+  const payload = sanitizeInspirationPayload(inspiration)
+
+  return {
+    ...payload,
+    title: String(payload.title || ''),
+    content: String(payload.content || ''),
+    tags: Array.isArray(payload.tags)
+      ? payload.tags.map(tag => String(tag).trim()).filter(Boolean)
+      : [],
+    style: payload.style ? String(payload.style) : ''
+  }
+}
+
+const normalizeInspirationForUpdate = (inspiration = {}) => {
+  const payload = sanitizeInspirationPayload(inspiration)
+  delete payload.id
+
+  // 局部更新只规范传入字段，避免保存扩写内容时误清空原始灵感。
+  if (Object.prototype.hasOwnProperty.call(payload, 'title')) {
+    payload.title = String(payload.title || '')
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'content')) {
+    payload.content = String(payload.content || '')
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'tags')) {
+    payload.tags = Array.isArray(payload.tags)
+      ? payload.tags.map(tag => String(tag).trim()).filter(Boolean)
+      : []
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'style')) {
+    payload.style = payload.style ? String(payload.style) : ''
+  }
+
+  return payload
+}
+
 export const inspirationDao = {
   async add(inspiration) {
+    // 写库前先转成普通对象，确保 Dexie / IndexedDB 可以安全克隆。
+    const payload = normalizeInspirationForCreate(inspiration)
+
     return await db.inspirations.add({
-      ...inspiration,
-      status: inspiration.status || 'draft',
+      ...payload,
+      status: payload.status || 'draft',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     })
   },
 
   async update(id, inspiration) {
+    // 更新时只清洗传入字段，支持 expandedContent、score、status 等局部写入。
+    const payload = normalizeInspirationForUpdate(inspiration)
+
     return await db.inspirations.update(id, {
-      ...inspiration,
+      ...payload,
       updatedAt: new Date().toISOString()
     })
   },

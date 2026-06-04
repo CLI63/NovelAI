@@ -64,7 +64,7 @@ export function useAI() {
       const model = options.model || getCurrentModel()
       const provider = options.provider || currentProvider.value
 
-      const result = await callAI(messages, provider, apiKey, model)
+      const result = await callAI(messages, provider, apiKey, model, options)
       return result
     } catch (err) {
       error.value = err.message

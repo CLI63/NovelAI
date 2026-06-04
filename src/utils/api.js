@@ -164,6 +164,7 @@ function delay(ms) {
 export async function callAIWithRetry(messages, provider, apiKey, model, options = {}) {
   const config = getProviderConfig(provider)
   const useModel = model || config.defaultModel
+  const temperature = options.temperature ?? config.temperature
   const maxRetries = options.maxRetries ?? retryConfig.maxRetries
   const retryDelay = options.retryDelay ?? retryConfig.retryDelay
 
@@ -176,7 +177,7 @@ export async function callAIWithRetry(messages, provider, apiKey, model, options
         {
           model: useModel,
           messages,
-          temperature: config.temperature,
+          temperature,
         },
         {
           headers: {
@@ -398,11 +399,14 @@ function extractContent(response, providerName) {
  * @param {string} provider - 提供商名称
  * @param {string} apiKey - API密钥
  * @param {string} [model] - 模型名称（可选，使用默认值）
+ * @param {Object} [options] - 可选请求配置
+ * @param {number} [options.temperature] - 本次请求的随机性覆盖值
  * @returns {Promise<string>} 生成的内容
  */
-export async function callAI(messages, provider, apiKey, model) {
+export async function callAI(messages, provider, apiKey, model, options = {}) {
   const config = getProviderConfig(provider)
   const useModel = model || config.defaultModel
+  const temperature = options.temperature ?? config.temperature
 
   try {
     const response = await apiClient.post(
@@ -410,7 +414,7 @@ export async function callAI(messages, provider, apiKey, model) {
       {
         model: useModel,
         messages,
-        temperature: config.temperature,
+        temperature,
       },
       {
         headers: {
@@ -424,7 +428,8 @@ export async function callAI(messages, provider, apiKey, model) {
     console.log(`${config.name} API返回的内容:`, content)
     return content
   } catch (error) {
-    throw new Error(`${config.name} API调用失败: ${error.message}`)
+    const errorInfo = classifyError(error)
+    throw new Error(`${config.name} API调用失败: ${errorInfo.message}`)
   }
 }
 
@@ -510,7 +515,9 @@ export async function callAIStream(messages, provider, apiKey, model, onChunk, o
   })
 
   if (!response.ok) {
-    throw new Error(`${config.name} API调用失败: ${response.status}`)
+    const error = new Error(`${config.name} API调用失败: ${response.status}`)
+    error.status = response.status
+    throw new Error(`${config.name} API调用失败: ${classifyError(error).message}`)
   }
 
   await handleStreamResponse(response, onChunk, onReasoning)
