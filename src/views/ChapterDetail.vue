@@ -17,6 +17,22 @@ const { novel, loadNovel } = useNovel()
 const { chapter, chapters, loading: chapterLoading, loadChapter, loadChapters, updateChapter, deleteChapter, getPrevNextChapter } = useChapter()
 const { exportChapter } = useChapterExport()
 const { generate, loading: generating, checkApiKey } = useAI()
+const {
+  scoring,
+  scoreResult,
+  suggestions,
+  runCoherenceScore
+} = useCoherenceScore()
+
+const scoreLevelText = computed(() => {
+  const level = scoreResult.value?.level
+  return typeof level === 'object' ? level.text : level
+})
+
+const scoreLevelColor = computed(() => {
+  const level = scoreResult.value?.level
+  return typeof level === 'object' ? level.color : (scoreResult.value?.passed ? 'success' : 'error')
+})
 
 // 后处理状态
 const postProcessing = ref(false)
@@ -277,8 +293,8 @@ onMounted(() => {
                       :status="scoreResult.passed ? 'success' : 'exception'"
                     />
                     <div class="score-level">
-                      <a-tag :color="scoreResult.passed ? 'success' : 'error'" size="large">
-                        {{ scoreResult.level }}
+                      <a-tag :color="scoreLevelColor" size="large">
+                        {{ scoreLevelText }}
                       </a-tag>
                     </div>
                   </div>

@@ -63,8 +63,12 @@ export function useAI() {
       const apiKey = options.apiKey || getApiKey()
       const model = options.model || getCurrentModel()
       const provider = options.provider || currentProvider.value
+      const requestOptions = {
+        timeout: appStore.settings.timeout,
+        ...options
+      }
 
-      const result = await callAI(messages, provider, apiKey, model, options)
+      const result = await callAI(messages, provider, apiKey, model, requestOptions)
       return result
     } catch (err) {
       error.value = err.message
@@ -92,8 +96,12 @@ export function useAI() {
       const apiKey = options.apiKey || getApiKey()
       const model = options.model || getCurrentModel()
       const provider = options.provider || currentProvider.value
+      const requestOptions = {
+        timeout: appStore.settings.timeout,
+        ...options
+      }
 
-      await callAIStream(messages, provider, apiKey, model, onChunk, options.onReasoning)
+      await callAIStream(messages, provider, apiKey, model, onChunk, options.onReasoning, requestOptions)
       return true
     } catch (err) {
       if (err.message === '用户停止生成') {

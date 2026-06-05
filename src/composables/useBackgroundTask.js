@@ -1,6 +1,8 @@
 import { ref } from 'vue'
 import db from '@/utils/db'
 
+const taskWriteLocks = new Map()
+
 /**
  * 清洗后台任务负载，避免把 Vue 响应式代理对象直接写入 IndexedDB，
  * 导致 DataCloneError。
@@ -16,6 +18,31 @@ function sanitizeBackgroundTaskPayload(payload) {
     console.warn('后台任务负载清洗失败，已回退为安全默认值:', error)
     return Array.isArray(payload) ? [] : {}
   }
+}
+
+/**
+ * 同一任务的写操作按队列串行执行，避免进度回调和暂停/取消同时写库时互相覆盖。
+ * @param {number} taskId - 任务ID
+ * @param {Function} writer - 实际写入逻辑
+ * @returns {Promise<any>} 写入结果
+ */
+function runTaskWrite(taskId, writer) {
+  if (taskId == null) return Promise.resolve(null)
+
+  const previousWrite = taskWriteLocks.get(taskId) || Promise.resolve()
+  const nextWrite = previousWrite
+    .catch(() => null)
+    .then(() => writer())
+  const guardedWrite = nextWrite.catch(() => null)
+
+  taskWriteLocks.set(taskId, guardedWrite)
+  guardedWrite.finally(() => {
+    if (taskWriteLocks.get(taskId) === guardedWrite) {
+      taskWriteLocks.delete(taskId)
+    }
+  })
+
+  return nextWrite
 }
 
 /**
@@ -45,7 +72,8 @@ export function useBackgroundTask() {
     COMPLETED: 'completed',   // 已完成
     FAILED: 'failed',         // 失败
     PARTIAL: 'partial',       // 部分成功
-    PAUSED: 'paused'          // 已暂停
+    PAUSED: 'paused',         // 已暂停
+    CANCELLED: 'cancelled'    // 已取消
   }
 
   /**
@@ -81,7 +109,7 @@ export function useBackgroundTask() {
     const chapterTasks = await getTasksByChapter(taskData.chapterId)
     const existingTask = chapterTasks.find(task =>
       task.type === TASK_TYPES.CHAPTER_POST_PROCESS &&
-      [TASK_STATUS.PENDING, TASK_STATUS.RUNNING, TASK_STATUS.COMPLETED].includes(task.status)
+      [TASK_STATUS.PENDING, TASK_STATUS.RUNNING].includes(task.status)
     )
 
     if (existingTask) {
@@ -108,13 +136,64 @@ export function useBackgroundTask() {
    * 更新任务状态
    * @param {number} taskId - 任务ID
    * @param {Object} updates - 更新数据
+   * @returns {Promise<Object|null>} 更新后的任务快照
    */
   const updateTask = async (taskId, updates) => {
-    // 更新任务时也做一次清洗，避免执行结果中的响应式对象再次写库失败。
-    await db.backgroundTasks.update(taskId, sanitizeBackgroundTaskPayload({
-      ...updates,
-      updatedAt: new Date().toISOString()
-    }))
+    return await runTaskWrite(taskId, async () => {
+      // 更新任务时也做一次清洗，避免执行结果中的响应式对象再次写库失败。
+      const nextPatch = sanitizeBackgroundTaskPayload({
+        ...updates,
+        updatedAt: new Date().toISOString()
+      })
+
+      await db.backgroundTasks.update(taskId, nextPatch)
+      const latestTask = await db.backgroundTasks.get(taskId)
+      return latestTask ? sanitizeBackgroundTaskPayload(latestTask) : null
+    })
+  }
+
+  /**
+   * 合并更新任务 data，并通过同任务写队列保证读写期间不被其它更新插队。
+   * @param {number} taskId - 任务ID
+   * @param {Object} dataPatch - 要合并到 data 的字段
+   * @param {Object} updates - data 之外的任务字段
+   * @returns {Promise<Object|null>} 更新后的任务快照
+   */
+  const mergeTaskData = async (taskId, dataPatch = {}, updates = {}) => {
+    if (taskId == null) return null
+
+    return await runTaskWrite(taskId, async () => {
+      const latestTask = sanitizeBackgroundTaskPayload(await db.backgroundTasks.get(taskId))
+      if (!latestTask) return null
+
+      const updatedAt = new Date().toISOString()
+      const nextData = sanitizeBackgroundTaskPayload({
+        ...(latestTask.data || {}),
+        ...sanitizeBackgroundTaskPayload(dataPatch)
+      })
+      const nextPatch = sanitizeBackgroundTaskPayload({
+        ...sanitizeBackgroundTaskPayload(updates),
+        data: nextData,
+        updatedAt
+      })
+
+      await db.backgroundTasks.update(taskId, nextPatch)
+
+      return sanitizeBackgroundTaskPayload({
+        ...latestTask,
+        ...nextPatch
+      })
+    })
+  }
+
+  /**
+   * 根据任务 ID 获取任务详情
+   * @param {number} taskId - 任务ID
+   * @returns {Promise<Object|null>} 任务详情
+   */
+  const getTaskById = async (taskId) => {
+    if (taskId == null) return null
+    return await db.backgroundTasks.get(taskId)
   }
 
   /**
@@ -235,7 +314,7 @@ export function useBackgroundTask() {
 
     const completedTasks = await db.backgroundTasks
       .where('status')
-      .anyOf([TASK_STATUS.COMPLETED, TASK_STATUS.FAILED])
+      .anyOf([TASK_STATUS.COMPLETED, TASK_STATUS.FAILED, TASK_STATUS.CANCELLED])
       .toArray()
 
     const toDelete = completedTasks.filter(t =>
@@ -270,7 +349,8 @@ export function useBackgroundTask() {
       completed: allTasks.filter(t => t.status === TASK_STATUS.COMPLETED).length,
       failed: allTasks.filter(t => t.status === TASK_STATUS.FAILED).length,
       partial: allTasks.filter(t => t.status === TASK_STATUS.PARTIAL).length,
-      paused: allTasks.filter(t => t.status === TASK_STATUS.PAUSED).length
+      paused: allTasks.filter(t => t.status === TASK_STATUS.PAUSED).length,
+      cancelled: allTasks.filter(t => t.status === TASK_STATUS.CANCELLED).length
     }
   }
 
@@ -317,6 +397,8 @@ export function useBackgroundTask() {
         return { status: 'failed', message: '处理失败', lastTask }
       case TASK_STATUS.PARTIAL:
         return { status: 'partial', message: '部分成功', lastTask }
+      case TASK_STATUS.CANCELLED:
+        return { status: 'cancelled', message: '已取消', lastTask }
       default:
         return { status: 'unknown', message: '未知状态', lastTask }
     }
@@ -330,6 +412,8 @@ export function useBackgroundTask() {
     createTask,
     ensureChapterPostProcessTask,
     updateTask,
+    mergeTaskData,
+    getTaskById,
     getPendingTasks,
     getRunningTasks,
     recoverInterruptedTasks,

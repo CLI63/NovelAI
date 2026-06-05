@@ -24,7 +24,11 @@ const route = useRoute()
 
 const { novel, loading: novelLoading, loadNovel } = useNovel()
 const { chapters, loadChapters, getRecentChapters, getChapterSummaries, createChapter, nextChapterNumber } = useChapter()
-const { createTask: createBackgroundTask, TASK_TYPES } = useBackgroundTask()
+const {
+  createTask: createBackgroundTask,
+  ensureChapterPostProcessTask,
+  TASK_TYPES
+} = useBackgroundTask()
 const { generateStream, generate, checkApiKey } = useAI()
 
 // 配置
@@ -41,6 +45,32 @@ const outlineMode = ref(true)  // 默认开启大纲预生成
 const chapterOutline = ref(null)
 const outlineGenerating = ref(false)
 const outlineStep = ref(0)  // 0: 未开始, 1: 大纲已生成, 2: 用户确认/修改后
+
+const normalizeStringArray = (value) => {
+  if (Array.isArray(value)) return value.map(item => String(item || '')).filter(Boolean)
+  if (typeof value === 'string' && value.trim()) return [value.trim()]
+  return []
+}
+
+const normalizeOutlineScene = (scene = {}) => ({
+  location: String(scene.location || ''),
+  mood: String(scene.mood || ''),
+  characters: normalizeStringArray(scene.characters),
+  events: normalizeStringArray(scene.events)
+})
+
+const normalizeChapterOutline = (outline = {}) => ({
+  title: String(outline.title || ''),
+  summary: String(outline.summary || ''),
+  scenes: Array.isArray(outline.scenes) ? outline.scenes.map(normalizeOutlineScene) : [],
+  keyEvents: normalizeStringArray(outline.keyEvents),
+  cliffhanger: String(outline.cliffhanger || ''),
+  // AI 返回大纲可能缺少 foreshadowing，统一补齐后模板 v-model 才不会访问空对象。
+  foreshadowing: {
+    plant: normalizeStringArray(outline.foreshadowing?.plant),
+    resolve: normalizeStringArray(outline.foreshadowing?.resolve)
+  }
+})
 
 // 流式生成状态
 const streamMode = ref(true)
@@ -116,7 +146,7 @@ const handleGenerateOutline = async () => {
     // 解析JSON
     const jsonMatch = response.match(/\{[\s\S]*\}/)
     if (jsonMatch) {
-      chapterOutline.value = JSON.parse(jsonMatch[0])
+      chapterOutline.value = normalizeChapterOutline(JSON.parse(jsonMatch[0]))
       outlineStep.value = 1
       message.success('大纲生成完成！请确认或修改后生成正文')
     } else {
@@ -468,11 +498,11 @@ const doSaveStreamChapter = async () => {
             chapterNumber: nextChapterNumber.value
           }
         }
-        const taskId = await createBackgroundTask(taskData)
+        const { id: taskId } = await ensureChapterPostProcessTask(taskData)
         console.log('已创建章节后处理任务，ID:', taskId)
         
         // 发送事件通知全局后台面板自动执行
-        eventBus.emit(EVENTS.TASK_CREATED, { id: taskId, ...taskData })
+        await eventBus.emitAsync(EVENTS.TASK_CREATED, { id: taskId, ...taskData })
       } catch (err) {
         console.warn('创建后处理任务失败:', err)
       }
@@ -605,7 +635,7 @@ const handleBatchGenerate = async () => {
     }
   }
   const backgroundTaskId = await createBackgroundTask(backgroundTaskData)
-  eventBus.emit(EVENTS.TASK_CREATED, {
+  await eventBus.emitAsync(EVENTS.TASK_CREATED, {
     id: backgroundTaskId,
     ...backgroundTaskData,
     status: 'pending'

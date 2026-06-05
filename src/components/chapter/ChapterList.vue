@@ -29,6 +29,7 @@ const {
   TASK_TYPES, 
   TASK_STATUS,
   createTask,
+  ensureChapterPostProcessTask,
   getChapterPostProcessStatus
 } = useBackgroundTask()
 
@@ -38,6 +39,7 @@ const selectedRowKeys = ref([])
 const postProcessStatusMap = ref({})
 // 批量处理中
 const batchProcessing = ref(false)
+let refreshStatusTimer = null
 
 // 行选择配置
 const rowSelection = computed(() => ({
@@ -155,7 +157,7 @@ const handleBatchPostProcess = async () => {
     const taskId = await createTask(taskData)
     
     // 发送事件通知自动执行
-    eventBus.emit(EVENTS.TASK_CREATED, { id: taskId, ...taskData })
+    await eventBus.emitAsync(EVENTS.TASK_CREATED, { id: taskId, ...taskData })
     
     message.success(`已创建批量后处理任务，共 ${selectedRowKeys.value.length} 章`)
     
@@ -186,10 +188,10 @@ const handlePostProcess = async (record) => {
         chapterNumber: record.chapterNumber
       }
     }
-    const taskId = await createTask(taskData)
+    const { id: taskId } = await ensureChapterPostProcessTask(taskData)
     
     // 发送事件通知自动执行
-    eventBus.emit(EVENTS.TASK_CREATED, { id: taskId, ...taskData })
+    await eventBus.emitAsync(EVENTS.TASK_CREATED, { id: taskId, ...taskData })
     
     message.success(`已为第${record.chapterNumber}章创建后处理任务`)
     
@@ -211,9 +213,25 @@ const handleDelete = (record) => {
 }
 
 function handleTaskStatusEvent(task) {
-  if (!task?.chapterId) return
-  if (!props.chapters.some(chapter => chapter.id === task.chapterId)) return
-  loadPostProcessStatus()
+  if (!task) return
+  if (![TASK_TYPES.CHAPTER_POST_PROCESS, TASK_TYPES.BATCH_CHAPTER_PROCESS].includes(task.type)) return
+
+  const hasRelatedChapter = task.chapterId
+    ? props.chapters.some(chapter => chapter.id === task.chapterId)
+    : Array.isArray(task.chapterIds)
+      ? task.chapterIds.some(chapterId => props.chapters.some(chapter => chapter.id === chapterId))
+      : true
+
+  if (!hasRelatedChapter) return
+
+  if (refreshStatusTimer) {
+    clearTimeout(refreshStatusTimer)
+  }
+  // 高频任务事件统一做轻量防抖，避免章节列表反复查询数据库。
+  refreshStatusTimer = setTimeout(() => {
+    loadPostProcessStatus()
+    refreshStatusTimer = null
+  }, 150)
 }
 
 const formatDate = (dateStr) => {
@@ -259,6 +277,10 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (refreshStatusTimer) {
+    clearTimeout(refreshStatusTimer)
+    refreshStatusTimer = null
+  }
   eventBus.off(EVENTS.TASK_CREATED, handleTaskStatusEvent)
   eventBus.off(EVENTS.TASK_STATUS_CHANGED, handleTaskStatusEvent)
   eventBus.off(EVENTS.TASK_EXECUTED, handleTaskStatusEvent)

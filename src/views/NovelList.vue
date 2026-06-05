@@ -1,6 +1,6 @@
 <script setup>
-import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useNovel } from '@/composables/useNovel'
 import PageHeader from '@/components/common/PageHeader.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -16,10 +16,27 @@ import {
 } from '@ant-design/icons-vue'
 
 const router = useRouter()
+const route = useRoute()
 const { novels, loading, loadNovels, deleteNovel, goToDetail, goToEdit, goToCreate } = useNovel()
 
 // 视图模式：table | grid
 const viewMode = ref('table')
+
+const searchKeyword = computed(() => String(route.query.q || '').trim().toLowerCase())
+
+const filteredNovels = computed(() => {
+  if (!searchKeyword.value) return novels.value
+
+  // 顶部搜索只做轻量本地过滤，避免额外引入全局搜索状态。
+  return novels.value.filter(novel => {
+    const searchableText = [
+      novel.title,
+      novel.description,
+      Array.isArray(novel.style) ? novel.style.join(' ') : novel.style
+    ].filter(Boolean).join(' ').toLowerCase()
+    return searchableText.includes(searchKeyword.value)
+  })
+})
 
 // 表格列配置
 const columns = [
@@ -145,8 +162,8 @@ onMounted(() => {
       <a-spin :spinning="loading" size="large">
         <!-- 空状态 -->
         <EmptyState
-          v-if="!loading && novels.length === 0"
-          description="暂无小说，快去创作您的第一部作品吧！"
+          v-if="!loading && filteredNovels.length === 0"
+          :description="searchKeyword ? '没有找到匹配的小说' : '暂无小说，快去创作您的第一部作品吧！'"
           button-text="立即创建"
           type="create"
           @action="goToCreate"
@@ -156,7 +173,7 @@ onMounted(() => {
         <template v-else-if="viewMode === 'table'">
           <a-table
             :columns="columns"
-            :data-source="novels"
+            :data-source="filteredNovels"
             :pagination="{
               pageSize: 10,
               showSizeChanger: true,
@@ -247,7 +264,7 @@ onMounted(() => {
         <template v-else>
           <div class="novel-grid">
             <div
-              v-for="novel in novels"
+              v-for="novel in filteredNovels"
               :key="novel.id"
               class="novel-card"
               @click="goToDetail(novel.id)"

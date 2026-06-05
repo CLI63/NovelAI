@@ -6,9 +6,9 @@ import { useNovel, useNovelStats } from '@/composables/useNovel'
 import { useChapter, useChapterExport } from '@/composables/useChapter'
 import { useCharacter } from '@/composables/useCharacter'
 import { useForeshadowing } from '@/composables/useForeshadowing'
-import { useGenerationQueue } from '@/composables/useGenerationQueue'
 import { usePlotBranch } from '@/composables/usePlotBranch'
 import { useAppStore } from '@/stores/app'
+import { useBackgroundTask } from '@/composables/useBackgroundTask'
 import PageHeader from '@/components/common/PageHeader.vue'
 import NovelInfo from '@/components/novel/NovelInfo.vue'
 import ChapterList from '@/components/chapter/ChapterList.vue'
@@ -28,7 +28,6 @@ const { scanResults, scanning, runFullScan } = useFullNovelQualityCheck()
 
 const fullGenPrompt = ref('')
 const {
-  fullGen,
   start: startFullGeneration,
   isRunning: isFullGenRunning
 } = useGlobalFullNovelGeneration()
@@ -55,18 +54,31 @@ const {
   resolvedForeshadowings: resolvedForeshadowing
 } = useForeshadowing()
 
-// 生成任务队列
+// 生成任务展示改为读取统一后台任务表，避免旧 generationTasks 队列误导用户。
 const {
-  tasks,
-  loading: tasksLoading,
-  loadTasks,
-  createTask,
-  pauseTask,
-  resumeTask,
-  cancelTask,
-  runningTask,
-  taskStats
-} = useGenerationQueue()
+  TASK_STATUS,
+  getTasksByNovel
+} = useBackgroundTask()
+const backgroundTasks = ref([])
+const tasksLoading = ref(false)
+
+const taskStats = computed(() => ({
+  running: backgroundTasks.value.filter(task => task.status === TASK_STATUS.RUNNING).length,
+  pending: backgroundTasks.value.filter(task => task.status === TASK_STATUS.PENDING).length,
+  completed: backgroundTasks.value.filter(task => task.status === TASK_STATUS.COMPLETED).length,
+  failed: backgroundTasks.value.filter(task => task.status === TASK_STATUS.FAILED).length,
+  paused: backgroundTasks.value.filter(task => task.status === TASK_STATUS.PAUSED).length,
+  cancelled: backgroundTasks.value.filter(task => task.status === TASK_STATUS.CANCELLED).length
+}))
+
+const loadBackgroundTasks = async (novelId) => {
+  tasksLoading.value = true
+  try {
+    backgroundTasks.value = await getTasksByNovel(novelId)
+  } finally {
+    tasksLoading.value = false
+  }
+}
 
 // 全本一键生成
 const handleStartFullGeneration = async () => {
@@ -81,10 +93,7 @@ const handleStartFullGeneration = async () => {
 
   try {
     await startFullGeneration(novel.value.id, fullGenPrompt.value)
-
-    if (fullGen.phase === 'completed') {
-      message.success(`全本生成完成，章节后处理将在后台继续执行。共 ${fullGen.results.length} 章`)
-    }
+    await loadBackgroundTasks(novel.value.id)
   } catch (error) {
     console.error('全本生成失败:', error)
     message.error('全本生成失败：' + error.message)
@@ -218,7 +227,7 @@ const loadData = async () => {
       loadChapters(novel.value.id),
       loadCharacters(novel.value.id),
       loadForeshadowing(novel.value.id),
-      loadTasks(novel.value.id),
+      loadBackgroundTasks(novel.value.id),
       loadBranches(novel.value.id)
     ])
   }
@@ -428,33 +437,6 @@ const handleDeleteForeshadowingConfirm = (foreshadowing) => {
   })
 }
 
-// ============ 任务队列方法 ============
-const handlePauseTask = async (taskId) => {
-  await pauseTask(taskId)
-  message.info('任务已暂停')
-  loadTasks(novel.value.id)
-}
-
-const handleResumeTask = async (taskId) => {
-  await resumeTask(taskId)
-  message.success('任务已恢复')
-  loadTasks(novel.value.id)
-}
-
-const handleCancelTask = async (taskId) => {
-  Modal.confirm({
-    title: '取消任务',
-    content: '确定要取消这个生成任务吗？',
-    okText: '取消任务',
-    okType: 'danger',
-    onOk: async () => {
-      await cancelTask(taskId)
-      message.success('任务已取消')
-      loadTasks(novel.value.id)
-    }
-  })
-}
-
 // ============ 剧情分支方法 ============
 const branchModalVisible = ref(false)
 const editingBranch = ref(null)
@@ -524,24 +506,48 @@ const handleDeleteBranch = (branchId) => {
 
 const getTaskStatusColor = (status) => {
   const colors = {
-    pending: 'default',
-    running: 'processing',
-    paused: 'warning',
-    completed: 'success',
-    failed: 'error'
+    [TASK_STATUS.PENDING]: 'default',
+    [TASK_STATUS.RUNNING]: 'processing',
+    [TASK_STATUS.PAUSED]: 'warning',
+    [TASK_STATUS.COMPLETED]: 'success',
+    [TASK_STATUS.FAILED]: 'error',
+    [TASK_STATUS.CANCELLED]: 'default'
   }
   return colors[status] || 'default'
 }
 
 const getTaskStatusText = (status) => {
   const texts = {
-    pending: '等待中',
-    running: '生成中',
-    paused: '已暂停',
-    completed: '已完成',
-    failed: '失败'
+    [TASK_STATUS.PENDING]: '等待中',
+    [TASK_STATUS.RUNNING]: '执行中',
+    [TASK_STATUS.PAUSED]: '已暂停',
+    [TASK_STATUS.COMPLETED]: '已完成',
+    [TASK_STATUS.FAILED]: '失败',
+    [TASK_STATUS.CANCELLED]: '已取消'
   }
   return texts[status] || status
+}
+
+const taskTypeText = (type) => ({
+  chapter_post_process: '章节后处理',
+  batch_chapter_process: '批量章节处理',
+  full_novel_generation: '全本生成',
+  batch_chapter_generation: '批量章节生成',
+  summary_generation: '摘要生成',
+  foreshadowing_extract: '伏笔提取',
+  character_update: '角色更新',
+  timeline_record: '时间线记录'
+})[type] || type
+
+const getTaskProgress = (task) => Number(task.result?.progress?.percent ?? task.data?.progress?.percent ?? 0) || 0
+
+const getTaskRangeText = (task) => {
+  const chaptersInTask = task.data?.chapters
+  if (Array.isArray(chaptersInTask) && chaptersInTask.length > 0) {
+    return `第 ${chaptersInTask[0].number} - ${chaptersInTask[chaptersInTask.length - 1].number} 章`
+  }
+  const currentNumber = task.result?.progress?.currentNumber ?? task.data?.progress?.currentNumber ?? task.chapterNumber
+  return currentNumber ? `第 ${currentNumber} 章` : '无章节范围'
 }
 
 // 角色类型映射
@@ -854,63 +860,45 @@ onMounted(() => {
                 <div class="task-stats">
                   <a-tag v-if="taskStats.running > 0" color="processing">运行中: {{ taskStats.running }}</a-tag>
                   <a-tag v-if="taskStats.pending > 0" color="default">等待中: {{ taskStats.pending }}</a-tag>
+                  <a-tag v-if="taskStats.paused > 0" color="warning">已暂停: {{ taskStats.paused }}</a-tag>
                   <a-tag v-if="taskStats.completed > 0" color="success">已完成: {{ taskStats.completed }}</a-tag>
+                  <a-tag v-if="taskStats.failed > 0" color="error">失败: {{ taskStats.failed }}</a-tag>
+                  <a-tag v-if="taskStats.cancelled > 0" color="default">已取消: {{ taskStats.cancelled }}</a-tag>
                 </div>
+                <a-button size="small" @click="loadBackgroundTasks(novel.id)">刷新任务</a-button>
               </div>
               
               <a-spin :spinning="tasksLoading">
-                <div v-if="tasks.length === 0" class="empty-state">
+                <div v-if="backgroundTasks.length === 0" class="empty-state">
                   <a-empty description="暂无生成任务" />
                 </div>
                 <div v-else class="task-list">
                   <a-card 
-                    v-for="task in tasks" 
+                    v-for="task in backgroundTasks"
                     :key="task.id" 
                     class="task-card"
                     size="small"
                   >
                     <template #title>
                       <div class="task-title">
-                        <span>{{ task.type === 'batch' ? '批量生成' : '单章生成' }}</span>
+                        <span>{{ taskTypeText(task.type) }}</span>
                         <a-tag :color="getTaskStatusColor(task.status)">
                           {{ getTaskStatusText(task.status) }}
                         </a-tag>
                       </div>
                     </template>
                     <template #extra>
-                      <a-space>
-                        <a-button 
-                          v-if="task.status === 'running'"
-                          type="link" 
-                          size="small" 
-                          @click="handlePauseTask(task.id)"
-                        >
-                          暂停
-                        </a-button>
-                        <a-button 
-                          v-if="task.status === 'paused'"
-                          type="link" 
-                          size="small" 
-                          @click="handleResumeTask(task.id)"
-                        >
-                          继续
-                        </a-button>
-                        <a-button 
-                          v-if="['pending', 'paused'].includes(task.status)"
-                          type="link" 
-                          size="small" 
-                          danger
-                          @click="handleCancelTask(task.id)"
-                        >
-                          取消
-                        </a-button>
-                      </a-space>
+                      <span class="task-updated">{{ task.updatedAt?.slice(0, 16).replace('T', ' ') }}</span>
                     </template>
                     
                     <div class="task-info">
-                      <p><strong>章节范围：</strong>第 {{ task.chapters?.[0]?.number }} - {{ task.chapters?.[task.chapters.length - 1]?.number }} 章</p>
-                      <p><strong>进度：</strong>{{ task.progress }}%</p>
-                      <a-progress :percent="task.progress" :status="task.status === 'failed' ? 'exception' : 'active'" />
+                      <p><strong>章节范围：</strong>{{ getTaskRangeText(task) }}</p>
+                      <p><strong>进度：</strong>{{ getTaskProgress(task) }}%</p>
+                      <a-progress
+                        :percent="getTaskProgress(task)"
+                        :status="task.status === TASK_STATUS.FAILED ? 'exception' : task.status === TASK_STATUS.COMPLETED ? 'success' : 'active'"
+                      />
+                      <p v-if="task.error" class="task-error">{{ task.error }}</p>
                     </div>
                   </a-card>
                 </div>

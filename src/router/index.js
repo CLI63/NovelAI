@@ -72,6 +72,11 @@ const router = createRouter({
       meta: { keepAlive: true },
       component: () => import('../views/Settings.vue'),
     },
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'notFound',
+      redirect: '/novels',
+    },
   ],
 })
 

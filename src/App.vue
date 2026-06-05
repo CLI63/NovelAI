@@ -1,7 +1,7 @@
 <script setup>
 import { KeepAlive, ref, computed, watch } from 'vue'
-import { RouterView } from 'vue-router'
-import { useRouter, useRoute } from 'vue-router'
+import { RouterView, useRouter, useRoute } from 'vue-router'
+import { message } from 'ant-design-vue'
 import {
   BookOutlined,
   BulbOutlined,
@@ -53,6 +53,38 @@ const currentPageTitle = computed(() => {
   return item?.label || 'AI小说生成器'
 })
 
+const handleSearch = () => {
+  const keyword = searchText.value.trim()
+  if (!keyword) {
+    message.info('请输入要搜索的小说关键词')
+    return
+  }
+
+  // 顶部搜索统一跳转小说列表，由列表页根据 query 过滤。
+  router.push({ path: '/novels', query: { q: keyword } })
+  searchVisible.value = false
+}
+
+const handleNotificationClick = () => {
+  message.info('暂无新的后台通知')
+}
+
+const handleUserMenuClick = ({ key }) => {
+  if (key === 'settings') {
+    router.push('/settings')
+    return
+  }
+
+  if (key === 'profile') {
+    message.info('个人中心暂未开放')
+    return
+  }
+
+  if (key === 'logout') {
+    message.info('当前为本地创作模式，无需退出登录')
+  }
+}
+
 watch(
   route,
   (newRoute) => {
@@ -91,8 +123,8 @@ watch(
         mode="inline"
         theme="light"
         :inline-collapsed="collapsed"
-        @click="handleMenuClick"
         class="app-menu"
+        @click="handleMenuClick"
       >
         <a-menu-item v-for="item in menuItems" :key="item.key">
           <template #icon>
@@ -138,6 +170,7 @@ watch(
                 v-model:value="searchText"
                 placeholder="搜索小说..."
                 class="search-input"
+                @pressEnter="handleSearch"
                 @blur="searchVisible = false"
               >
                 <template #prefix>
@@ -151,7 +184,7 @@ watch(
 
             <!-- 通知 -->
             <a-badge :count="0" :offset="[-2, 2]">
-              <a-button type="text" class="icon-btn">
+              <a-button type="text" class="icon-btn" @click="handleNotificationClick">
                 <BellOutlined />
               </a-button>
             </a-badge>
@@ -165,11 +198,11 @@ watch(
                 <span class="user-name">创作者</span>
               </div>
               <template #overlay>
-                <a-menu>
+                <a-menu @click="handleUserMenuClick">
                   <a-menu-item key="profile">
                     <UserOutlined /> 个人中心
                   </a-menu-item>
-                  <a-menu-item key="settings" @click="router.push('/settings')">
+                  <a-menu-item key="settings">
                     <SettingOutlined /> 系统设置
                   </a-menu-item>
                   <a-menu-divider />

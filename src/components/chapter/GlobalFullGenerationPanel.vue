@@ -7,7 +7,20 @@ import { useBackgroundTaskPanel } from '@/composables/useBackgroundTaskPanel'
 import { eventBus, EVENTS } from '@/utils/eventBus'
 
 const router = useRouter()
-const { fullGen, visible, expanded, novelId, canClose, close, restoreLatestTask, syncFromTask } = useGlobalFullNovelGeneration()
+const {
+  fullGen,
+  visible,
+  expanded,
+  novelId,
+  canClose,
+  close,
+  restoreLatestTask,
+  syncFromTask,
+  pauseCurrentTask,
+  resumeCurrentTask,
+  cancelCurrentTask,
+  taskControlBusy
+} = useGlobalFullNovelGeneration()
 const {
   taskTypeNames,
   TASK_STATUS,
@@ -24,7 +37,8 @@ const {
   executeAllPending,
   scheduleAutoRun,
   removeTask,
-  cleanupTasks
+  cleanupTasks,
+  getTaskById
 } = useBackgroundTaskPanel()
 
 const panelPosition = reactive({
@@ -170,14 +184,14 @@ function getTaskTagColor(status) {
     [TASK_STATUS.FAILED]: 'error',
     [TASK_STATUS.RUNNING]: 'processing',
     [TASK_STATUS.PAUSED]: 'warning',
-    [TASK_STATUS.PARTIAL]: 'warning'
+    [TASK_STATUS.PARTIAL]: 'warning',
+    [TASK_STATUS.CANCELLED]: 'default'
   }
   return map[status] || 'default'
 }
 
 function canExecuteTask(task) {
-  return task.type !== 'batch_chapter_generation' &&
-    [TASK_STATUS.PENDING, TASK_STATUS.FAILED].includes(task.status)
+  return [TASK_STATUS.PENDING, TASK_STATUS.FAILED].includes(task.status)
 }
 
 async function handleCleanupTasks() {
@@ -201,9 +215,21 @@ async function handleTaskCreated(task) {
 async function handleTaskLifecycle(task) {
   await refreshTasks()
   if (task?.type !== 'full_novel_generation') return
-  const latestTask = recentTasks.value.find(item => item.id === task.id) || task
+  const latestTask = await getTaskById(task.id) || task
   syncFromTask(latestTask)
   await restoreLatestTask()
+}
+
+async function handlePauseFullGeneration() {
+  await pauseCurrentTask()
+}
+
+async function handleResumeFullGeneration() {
+  await resumeCurrentTask()
+}
+
+async function handleCancelFullGeneration() {
+  await cancelCurrentTask()
 }
 
 onMounted(async () => {
@@ -323,12 +349,12 @@ onUnmounted(() => {
 
           <div class="control-row">
             <template v-if="fullGen.phase === 'chapters'">
-              <a-button size="small" @click="fullGen.pause">暂停</a-button>
-              <a-button size="small" danger @click="fullGen.cancel">取消</a-button>
+              <a-button size="small" :loading="taskControlBusy" @click="handlePauseFullGeneration">暂停</a-button>
+              <a-button size="small" danger :disabled="taskControlBusy" @click="handleCancelFullGeneration">取消</a-button>
             </template>
             <template v-else-if="fullGen.phase === 'paused'">
-              <a-button size="small" type="primary" @click="fullGen.resume">继续</a-button>
-              <a-button size="small" danger @click="fullGen.cancel">取消</a-button>
+              <a-button size="small" type="primary" :loading="taskControlBusy" @click="handleResumeFullGeneration">继续</a-button>
+              <a-button size="small" danger :disabled="taskControlBusy" @click="handleCancelFullGeneration">取消</a-button>
             </template>
             <a-button
               v-if="fullGen.phase === 'completed'"
@@ -400,7 +426,7 @@ onUnmounted(() => {
                   @confirm="handleRemoveTask(task.id)"
                 >
                   <a-button
-                    v-if="[TASK_STATUS.COMPLETED, TASK_STATUS.FAILED].includes(task.status)"
+                    v-if="[TASK_STATUS.COMPLETED, TASK_STATUS.FAILED, TASK_STATUS.CANCELLED].includes(task.status)"
                     type="link"
                     size="small"
                     danger
@@ -537,7 +563,7 @@ onUnmounted(() => {
 }
 
 .hero-progress {
-width: 90%;
+  width: 90%;
   margin-bottom: 10px;
 }
 

@@ -251,7 +251,15 @@ export function useReadingProgress(novelId, chapters) {
   // 计算阅读百分比
   const readingPercent = computed(() => {
     if (!chapters.value?.length) return 0
-    return Math.round((currentProgress.value.chapterNumber / chapters.value.length) * 100)
+    const sortedChapters = [...chapters.value].sort((left, right) =>
+      Number(left.chapterNumber || 0) - Number(right.chapterNumber || 0)
+    )
+    const currentIndex = sortedChapters.findIndex(chapter =>
+      Number(chapter.chapterNumber) === Number(currentProgress.value.chapterNumber)
+    )
+    // 按章节列表索引计算阅读进度，避免章节号不连续时超过 100%。
+    if (currentIndex < 0) return 0
+    return Math.min(100, Math.max(0, Math.round(((currentIndex + 1) / sortedChapters.length) * 100)))
   })
 
   return {

@@ -13,7 +13,6 @@ import { getStrategyInfo } from '@/utils/batchGenerator'
 import { buildChapterSummaryPrompt, buildStreamChapterPrompt, getVolumeContext } from '@/utils/prompts'
 import { chapterDao } from '@/utils/dao'
 
-const runningSessionIds = new Set()
 const recentTasks = ref([])
 const taskStats = ref({
   total: 0,
@@ -22,15 +21,21 @@ const taskStats = ref({
   completed: 0,
   failed: 0,
   partial: 0,
-  paused: 0
+  paused: 0,
+  cancelled: 0
 })
 const loading = ref(false)
 const runningTaskIds = ref(new Set())
 const autoRunQueue = []
-let autoRunScheduled = false
+let isAutoRunFlushing = false
 
 function isPanelExecutableTask(task, taskTypes) {
-  return task?.type !== taskTypes.BATCH_CHAPTER_GENERATION
+  return [
+    taskTypes.CHAPTER_POST_PROCESS,
+    taskTypes.BATCH_CHAPTER_PROCESS,
+    taskTypes.FULL_NOVEL_GENERATION,
+    taskTypes.BATCH_CHAPTER_GENERATION
+  ].includes(task?.type)
 }
 
 export function useBackgroundTaskPanel() {
@@ -40,8 +45,11 @@ export function useBackgroundTaskPanel() {
     getAllTasks,
     getTaskStats,
     getPendingTasks,
+    getTaskById,
+    ensureChapterPostProcessTask,
     recoverInterruptedTasks,
     updateTask,
+    mergeTaskData,
     createTask,
     deleteTask,
     cleanupCompletedTasks
@@ -49,7 +57,7 @@ export function useBackgroundTaskPanel() {
   const { novel, loadNovel } = useNovel()
   const { chapter, chapters, loadChapters, loadChapter } = useChapter()
   const { generate, checkApiKey } = useAI()
-  const { fullGen, syncFromTask } = useGlobalFullNovelGeneration()
+  const { fullGen, syncFromTask, attachRuntimeTask, detachRuntimeTask } = useGlobalFullNovelGeneration()
   const { runQualityCheck } = useQualityCheck()
 
   const taskTypeNames = {
@@ -69,7 +77,8 @@ export function useBackgroundTaskPanel() {
     [TASK_STATUS.COMPLETED]: '已完成',
     [TASK_STATUS.FAILED]: '失败',
     [TASK_STATUS.PARTIAL]: '部分成功',
-    [TASK_STATUS.PAUSED]: '已暂停'
+    [TASK_STATUS.PAUSED]: '已暂停',
+    [TASK_STATUS.CANCELLED]: '已取消'
   }
 
   const actionableTasks = computed(() =>
@@ -102,6 +111,10 @@ export function useBackgroundTaskPanel() {
       chapterNumber: task.chapterNumber,
       status
     })
+  }
+
+  function isTaskRunning(taskId) {
+    return runningTaskIds.value.has(taskId)
   }
 
   async function refreshTasks() {
@@ -173,7 +186,7 @@ export function useBackgroundTaskPanel() {
         throw new Error(`找不到章节 ${chapterId} 的数据`)
       }
 
-      const subTaskId = await createTask({
+      const { id: subTaskId } = await ensureChapterPostProcessTask({
         type: TASK_TYPES.CHAPTER_POST_PROCESS,
         novelId,
         chapterId,
@@ -440,12 +453,11 @@ export function useBackgroundTaskPanel() {
       })
     }
 
-    const failedCount = plannedChapters.filter(item => item.status === 'failed').length
-    const finalStatus = failedCount > 0 ? TASK_STATUS.PARTIAL : TASK_STATUS.COMPLETED
+    const finalStatus = TASK_STATUS.COMPLETED
     const progress = createBatchGenerationProgress(data, plannedChapters, {
       percent: 100,
-      currentPhase: finalStatus === TASK_STATUS.PARTIAL ? 'partial' : 'completed',
-      phase: finalStatus === TASK_STATUS.PARTIAL ? 'partial' : 'completed'
+      currentPhase: 'completed',
+      phase: 'completed'
     })
 
     return {
@@ -461,38 +473,88 @@ export function useBackgroundTaskPanel() {
   }
 
   async function executeFullNovelGeneration(task) {
+    attachRuntimeTask(task.id)
     syncFromTask(task)
 
     fullGen.setOnProgress(async (progress) => {
-      await updateTask(task.id, {
-        data: {
-          ...task.data,
-          progress,
-          results: [...fullGen.results],
-          errors: [...fullGen.errors]
-        }
+      const latestTask = await getTaskById(task.id)
+      if (!latestTask) return
+
+      // 终态任务不再接收运行时尾部回调，防止取消后旧进度把状态拉回。
+      if ([TASK_STATUS.CANCELLED, TASK_STATUS.COMPLETED, TASK_STATUS.FAILED].includes(latestTask.status)) {
+        return
+      }
+
+      const nextProgress = latestTask.status === TASK_STATUS.PAUSED
+        ? {
+            ...(latestTask.data?.progress || latestTask.result?.progress || {}),
+            ...progress,
+            phase: 'paused',
+            currentPhase: 'paused'
+          }
+        : progress
+
+      const mergedTask = await mergeTaskData(task.id, {
+        progress: nextProgress,
+        results: [...fullGen.results],
+        errors: [...fullGen.errors]
       })
-      syncFromTask({
-        ...task,
-        status: TASK_STATUS.RUNNING,
-        data: {
-          ...task.data,
-          progress,
-          results: [...fullGen.results],
-          errors: [...fullGen.errors]
-        }
-      })
+      if (!mergedTask) return
+
+      syncFromTask(mergedTask)
     })
 
-    await fullGen.start(task.data.novelId, task.data.extraPrompt || '')
+    try {
+      await fullGen.start(task.data.novelId, task.data.extraPrompt || '', {
+        resumeSnapshot: {
+          progress: task.result?.progress || task.data?.progress || null,
+          results: task.result?.results || task.data?.results || [],
+          errors: task.result?.errors || task.data?.errors || []
+        }
+      })
+    } finally {
+      fullGen.setOnProgress(null)
+      detachRuntimeTask(task.id)
+    }
 
     if (fullGen.phase === 'completed') {
-      return { success: true, data: { results: fullGen.results, progress: fullGen.progress } }
+      return {
+        success: true,
+        status: TASK_STATUS.COMPLETED,
+        data: {
+          results: fullGen.results,
+          errors: fullGen.errors,
+          progress: fullGen.progress
+        }
+      }
     }
     if (fullGen.phase === 'cancelled') {
-      return { success: true, data: { cancelled: true, results: fullGen.results, progress: fullGen.progress } }
+      return {
+        success: true,
+        status: TASK_STATUS.CANCELLED,
+        data: {
+          cancelled: true,
+          results: fullGen.results,
+          errors: fullGen.errors,
+          progress: fullGen.progress
+        }
+      }
     }
-    return { success: false, error: '生成未完成' }
+    if (fullGen.phase === 'paused') {
+      return {
+        success: true,
+        status: TASK_STATUS.PAUSED,
+        data: {
+          results: fullGen.results,
+          errors: fullGen.errors,
+          progress: fullGen.progress
+        }
+      }
+    }
+    return {
+      success: false,
+      error: fullGen.errors[fullGen.errors.length - 1]?.error || '生成未完成'
+    }
   }
 
   async function executeTask(task, options = {}) {
@@ -503,7 +565,14 @@ export function useBackgroundTaskPanel() {
       return
     }
 
-    if (runningTaskIds.value.has(task.id)) {
+    const latestTask = await getTaskById(task.id)
+    if (!latestTask) return
+
+    if (isTaskRunning(task.id)) {
+      return
+    }
+
+    if ([TASK_STATUS.COMPLETED, TASK_STATUS.CANCELLED].includes(latestTask.status)) {
       return
     }
 
@@ -513,21 +582,20 @@ export function useBackgroundTaskPanel() {
 
     try {
       await updateTask(task.id, { status: TASK_STATUS.RUNNING, error: null })
-      runningSessionIds.add(task.id)
 
       let result = { success: true }
-      switch (task.type) {
+      switch (latestTask.type) {
         case TASK_TYPES.CHAPTER_POST_PROCESS:
-          result = await executeChapterPostProcess(task)
+          result = await executeChapterPostProcess(latestTask)
           break
         case TASK_TYPES.BATCH_CHAPTER_PROCESS:
-          result = await executeBatchChapterProcess(task)
+          result = await executeBatchChapterProcess(latestTask)
           break
         case TASK_TYPES.FULL_NOVEL_GENERATION:
-          result = await executeFullNovelGeneration(task)
+          result = await executeFullNovelGeneration(latestTask)
           break
         case TASK_TYPES.BATCH_CHAPTER_GENERATION:
-          result = await executeBatchChapterGeneration(task)
+          result = await executeBatchChapterGeneration(latestTask)
           break
       }
 
@@ -538,33 +606,33 @@ export function useBackgroundTaskPanel() {
           result: result.data || null,
           error: null
         })
-        eventBus.emit(EVENTS.TASK_EXECUTED, {
+        await eventBus.emitAsync(EVENTS.TASK_EXECUTED, {
           id: task.id,
-          type: task.type,
-          novelId: task.novelId,
-          chapterId: task.chapterId,
-          chapterNumber: task.chapterNumber
+          type: latestTask.type,
+          novelId: latestTask.novelId,
+          chapterId: latestTask.chapterId,
+          chapterNumber: latestTask.chapterNumber
         })
       } else {
         await updateTask(task.id, {
           status: TASK_STATUS.FAILED,
           error: result.error || '任务执行失败'
         })
-        eventBus.emit(EVENTS.TASK_FAILED, {
+        await eventBus.emitAsync(EVENTS.TASK_FAILED, {
           id: task.id,
-          type: task.type,
-          novelId: task.novelId,
-          chapterId: task.chapterId,
-          chapterNumber: task.chapterNumber,
+          type: latestTask.type,
+          novelId: latestTask.novelId,
+          chapterId: latestTask.chapterId,
+          chapterNumber: latestTask.chapterNumber,
           error: result.error || '任务执行失败'
         })
       }
-      eventBus.emit(EVENTS.TASK_STATUS_CHANGED, {
+      await eventBus.emitAsync(EVENTS.TASK_STATUS_CHANGED, {
         id: task.id,
-        type: task.type,
-        novelId: task.novelId,
-        chapterId: task.chapterId,
-        chapterNumber: task.chapterNumber,
+        type: latestTask.type,
+        novelId: latestTask.novelId,
+        chapterId: latestTask.chapterId,
+        chapterNumber: latestTask.chapterNumber,
         status: result.success ? (result.status || TASK_STATUS.COMPLETED) : TASK_STATUS.FAILED
       })
     } catch (error) {
@@ -572,20 +640,20 @@ export function useBackgroundTaskPanel() {
         status: TASK_STATUS.FAILED,
         error: error.message
       })
-      eventBus.emit(EVENTS.TASK_FAILED, {
+      await eventBus.emitAsync(EVENTS.TASK_FAILED, {
         id: task.id,
-        type: task.type,
-        novelId: task.novelId,
-        chapterId: task.chapterId,
-        chapterNumber: task.chapterNumber,
+        type: latestTask?.type || task.type,
+        novelId: latestTask?.novelId || task.novelId,
+        chapterId: latestTask?.chapterId || task.chapterId,
+        chapterNumber: latestTask?.chapterNumber || task.chapterNumber,
         error: error.message
       })
-      eventBus.emit(EVENTS.TASK_STATUS_CHANGED, {
+      await eventBus.emitAsync(EVENTS.TASK_STATUS_CHANGED, {
         id: task.id,
-        type: task.type,
-        novelId: task.novelId,
-        chapterId: task.chapterId,
-        chapterNumber: task.chapterNumber,
+        type: latestTask?.type || task.type,
+        novelId: latestTask?.novelId || task.novelId,
+        chapterId: latestTask?.chapterId || task.chapterId,
+        chapterNumber: latestTask?.chapterNumber || task.chapterNumber,
         status: TASK_STATUS.FAILED
       })
       if (!silent) {
@@ -595,30 +663,37 @@ export function useBackgroundTaskPanel() {
       const nextRunningAfter = new Set(runningTaskIds.value)
       nextRunningAfter.delete(task.id)
       runningTaskIds.value = nextRunningAfter
-      runningSessionIds.delete(task.id)
+      detachRuntimeTask(task.id)
       await refreshTasks()
     }
   }
 
   async function flushAutoRunQueue() {
-    autoRunScheduled = false
+    if (isAutoRunFlushing) return
+    isAutoRunFlushing = true
 
-    while (autoRunQueue.length > 0) {
-      const task = autoRunQueue.shift()
-      if (!task || runningSessionIds.has(task.id)) continue
-      await executeTask(task, { silent: true })
+    try {
+      while (autoRunQueue.length > 0) {
+        const task = autoRunQueue.shift()
+        if (!task || isTaskRunning(task.id)) continue
+        await executeTask(task, { silent: true })
+      }
+    } finally {
+      isAutoRunFlushing = false
+      if (autoRunQueue.length > 0) {
+        Promise.resolve().then(flushAutoRunQueue)
+      }
     }
   }
 
   function scheduleAutoRun(task) {
     if (!task?.id) return
     if (!autoRunnableTaskTypes.includes(task.type)) return
-    if (runningSessionIds.has(task.id)) return
+    if (isTaskRunning(task.id)) return
     if (autoRunQueue.some(item => item.id === task.id)) return
 
     autoRunQueue.push(task)
-    if (!autoRunScheduled) {
-      autoRunScheduled = true
+    if (!isAutoRunFlushing) {
       Promise.resolve().then(flushAutoRunQueue)
     }
   }
@@ -664,5 +739,6 @@ export function useBackgroundTaskPanel() {
     scheduleAutoRun,
     removeTask,
     cleanupTasks,
+    getTaskById
   }
 }

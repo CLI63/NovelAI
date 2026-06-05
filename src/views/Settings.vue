@@ -29,6 +29,7 @@ const form = ref({
 
 const loading = ref(false)
 const activeTab = ref('api')
+const BACKUP_VERSION = '2.0'
 
 // 提供商配置
 const providerConfig = {
@@ -144,7 +145,8 @@ const handleTest = async () => {
       [{ role: 'user', content: '你好，请回复"测试成功"' }],
       form.value.aiProvider,
       currentApiKey.value,
-      currentModel.value
+      currentModel.value,
+      { timeout: form.value.timeout }
     )
     if (response.includes('测试成功')) {
       message.success('API连接测试成功！')
@@ -162,12 +164,14 @@ const handleTest = async () => {
 const handleClearData = () => {
   Modal.confirm({
     title: '⚠️ 危险操作确认',
-    content: '确定要清除所有数据吗？此操作将删除所有小说和章节，不可恢复！',
+    content: '确定要清除所有数据吗？此操作将删除全部业务数据和设置，不可恢复！',
     okText: '确认清除',
     cancelText: '取消',
     okType: 'danger',
     centered: true,
     onOk: () => {
+      // 删除 IndexedDB 前先关闭 Dexie 连接，避免浏览器阻塞删除请求。
+      db.close()
       indexedDB.deleteDatabase('NovelAIDB')
       localStorage.removeItem('novelAISettings')
       message.success('数据已清除，请刷新页面')
@@ -175,18 +179,45 @@ const handleClearData = () => {
   })
 }
 
+const exportAllTables = async () => {
+  const tables = {}
+  for (const table of db.tables) {
+    tables[table.name] = await table.toArray()
+  }
+  return tables
+}
+
+const normalizeImportTables = (importData) => {
+  if (importData.tables && typeof importData.tables === 'object') {
+    return importData.tables
+  }
+
+  const legacyData = importData.data || {}
+  // 兼容旧备份格式：旧版本只包含 novels/chapters/settings。
+  return {
+    novels: Array.isArray(legacyData.novels) ? legacyData.novels : [],
+    chapters: Array.isArray(legacyData.chapters) ? legacyData.chapters : []
+  }
+}
+
+const normalizeImportSettings = (importData) => {
+  if ('settings' in importData) return importData.settings
+  return importData.data?.settings ?? null
+}
+
 // 导出数据
 const handleExportData = async () => {
   loading.value = true
   try {
-    const novels = await db.novels.toArray()
-    const chapters = await db.chapters.toArray()
+    const tables = await exportAllTables()
     const settings = localStorage.getItem('novelAISettings')
+    const tableCount = Object.values(tables).reduce((sum, rows) => sum + rows.length, 0)
 
     const exportData = {
-      version: '1.0',
+      version: BACKUP_VERSION,
       exportTime: new Date().toISOString(),
-      data: { novels, chapters, settings: settings ? JSON.parse(settings) : null },
+      tables,
+      settings: settings ? JSON.parse(settings) : null,
     }
 
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
@@ -199,7 +230,7 @@ const handleExportData = async () => {
     document.body.removeChild(link)
     URL.revokeObjectURL(url)
 
-    message.success(`导出成功：${novels.length} 部小说，${chapters.length} 个章节`)
+    message.success(`导出成功：${db.tables.length} 张表，共 ${tableCount} 条数据`)
   } catch (error) {
     message.error('导出失败：' + error.message)
   } finally {
@@ -225,28 +256,43 @@ const handleImportData = async (event) => {
     const text = await file.text()
     const importData = JSON.parse(text)
 
-    if (!importData.version || !importData.data) {
+    if (!importData || (!importData.tables && !importData.data)) {
       throw new Error('无效的备份文件格式')
     }
 
-    const { novels = [], chapters = [], settings = null } = importData.data
+    const tables = normalizeImportTables(importData)
+    const settings = normalizeImportSettings(importData)
+    const tableNames = db.tables.map(table => table.name)
+    const importTableNames = Object.keys(tables).filter(name => tableNames.includes(name))
+    const importCount = importTableNames.reduce((sum, name) => sum + (Array.isArray(tables[name]) ? tables[name].length : 0), 0)
+
+    if (importTableNames.length === 0) {
+      throw new Error('无效的备份文件格式')
+    }
 
     Modal.confirm({
       title: '📦 导入数据确认',
-      content: `即将导入 ${novels.length} 部小说和 ${chapters.length} 个章节。现有数据将被覆盖，是否继续？`,
+      content: `即将导入 ${importTableNames.length} 张表、${importCount} 条数据。现有数据将被覆盖，是否继续？`,
       okText: '确认导入',
       cancelText: '取消',
       centered: true,
       onOk: async () => {
         try {
-          await db.novels.clear()
-          await db.chapters.clear()
+          // 只处理当前数据库实际存在的表，保证旧备份和未来多余字段都能安全跳过。
+          for (const table of db.tables) {
+            await table.clear()
+          }
 
-          if (novels.length > 0) await db.novels.bulkPut(novels)
-          if (chapters.length > 0) await db.chapters.bulkPut(chapters)
+          for (const tableName of importTableNames) {
+            const rows = Array.isArray(tables[tableName]) ? tables[tableName] : []
+            if (rows.length > 0) {
+              await db.table(tableName).bulkPut(rows)
+            }
+          }
 
           if (settings) {
-            localStorage.setItem('novelAISettings', JSON.stringify(settings))
+            // 导入设置时同步 Pinia 和 localStorage，避免页面仍显示旧配置。
+            appStore.updateSettings(settings)
             loadSettings()
           }
 

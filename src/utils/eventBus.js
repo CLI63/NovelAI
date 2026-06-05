@@ -52,6 +52,23 @@ class EventBus {
   }
 
   /**
+   * 异步触发事件
+   * 关键任务链路使用可等待版本，避免异步监听器错误被静默吞掉。
+   * @param {string} event - 事件名称
+   * @param {*} data - 传递的数据
+   */
+  async emitAsync(event, data) {
+    if (!this.events[event]) return
+    for (const callback of this.events[event]) {
+      try {
+        await callback(data)
+      } catch (err) {
+        console.error(`事件 ${event} 异步处理错误:`, err)
+      }
+    }
+  }
+
+  /**
    * 只监听一次
    * @param {string} event - 事件名称
    * @param {Function} callback - 回调函数

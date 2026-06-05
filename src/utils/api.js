@@ -60,7 +60,12 @@ export function classifyError(error) {
   }
 
   // 超时错误
-  if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+  if (
+    error.code === 'ECONNABORTED' ||
+    error.name === 'AbortError' ||
+    error.message?.includes('timeout') ||
+    error.message?.includes('超时')
+  ) {
     return {
       type: ErrorType.NETWORK,
       canRetry: true,
@@ -149,6 +154,25 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function getRequestTimeout(options = {}) {
+  return Number(options.timeout) || 1800000
+}
+
+function createTimeoutSignal(timeout) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => {
+    controller.abort(new Error('请求超时'))
+  }, timeout)
+
+  return { controller, timer }
+}
+
+function logApiDebug(...args) {
+  if (import.meta.env.DEV) {
+    console.log(...args)
+  }
+}
+
 /**
  * 带重试的 AI API 调用
  * @param {Array} messages - 消息数组
@@ -167,6 +191,7 @@ export async function callAIWithRetry(messages, provider, apiKey, model, options
   const temperature = options.temperature ?? config.temperature
   const maxRetries = options.maxRetries ?? retryConfig.maxRetries
   const retryDelay = options.retryDelay ?? retryConfig.retryDelay
+  const timeout = getRequestTimeout(options)
 
   let lastError = null
 
@@ -183,12 +208,13 @@ export async function callAIWithRetry(messages, provider, apiKey, model, options
           headers: {
             Authorization: `Bearer ${apiKey}`,
           },
+          timeout,
         }
       )
 
-      console.log(`${config.name} API完整响应:`, response)
+      logApiDebug(`${config.name} API完整响应:`, response)
       const content = extractContent(response, config.name)
-      console.log(`${config.name} API返回的内容:`, content)
+      logApiDebug(`${config.name} API返回的内容:`, content)
       return content
     } catch (error) {
       lastError = error
@@ -242,15 +268,19 @@ export async function callAIStreamWithRetry(
 ) {
   const config = getProviderConfig(provider)
   const useModel = model || config.defaultModel
+  const temperature = options.temperature ?? config.temperature
   const maxRetries = options.maxRetries ?? retryConfig.maxRetries
   const retryDelay = options.retryDelay ?? retryConfig.retryDelay
+  const timeout = getRequestTimeout(options)
 
   let lastError = null
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const { controller, timer } = createTimeoutSignal(timeout)
     try {
       const response = await fetch(config.url, {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
@@ -259,7 +289,7 @@ export async function callAIStreamWithRetry(
           model: useModel,
           messages,
           stream: true,
-          temperature: config.temperature,
+          temperature,
         }),
       })
 
@@ -299,6 +329,8 @@ export async function callAIStreamWithRetry(
 
       // 等待后重试
       await delay(backoffDelay)
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -407,6 +439,7 @@ export async function callAI(messages, provider, apiKey, model, options = {}) {
   const config = getProviderConfig(provider)
   const useModel = model || config.defaultModel
   const temperature = options.temperature ?? config.temperature
+  const timeout = getRequestTimeout(options)
 
   try {
     const response = await apiClient.post(
@@ -420,12 +453,13 @@ export async function callAI(messages, provider, apiKey, model, options = {}) {
         headers: {
           Authorization: `Bearer ${apiKey}`,
         },
+        timeout,
       }
     )
 
-    console.log(`${config.name} API完整响应:`, response)
+    logApiDebug(`${config.name} API完整响应:`, response)
     const content = extractContent(response, config.name)
-    console.log(`${config.name} API返回的内容:`, content)
+    logApiDebug(`${config.name} API返回的内容:`, content)
     return content
   } catch (error) {
     const errorInfo = classifyError(error)
@@ -496,31 +530,39 @@ async function handleStreamResponse(response, onChunk, onReasoning) {
  * @param {Function} onChunk - 每次接收到内容块的回调
  * @param {Function} [onReasoning] - 接收到思考内容的回调（可选）
  */
-export async function callAIStream(messages, provider, apiKey, model, onChunk, onReasoning) {
+export async function callAIStream(messages, provider, apiKey, model, onChunk, onReasoning, options = {}) {
   const config = getProviderConfig(provider)
   const useModel = model || config.defaultModel
+  const temperature = options.temperature ?? config.temperature
+  const timeout = getRequestTimeout(options)
+  const { controller, timer } = createTimeoutSignal(timeout)
 
-  const response = await fetch(config.url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: useModel,
-      messages,
-      stream: true,
-      temperature: config.temperature,
-    }),
-  })
+  try {
+    const response = await fetch(config.url, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: useModel,
+        messages,
+        stream: true,
+        temperature,
+      }),
+    })
 
-  if (!response.ok) {
-    const error = new Error(`${config.name} API调用失败: ${response.status}`)
-    error.status = response.status
-    throw new Error(`${config.name} API调用失败: ${classifyError(error).message}`)
+    if (!response.ok) {
+      const error = new Error(`${config.name} API调用失败: ${response.status}`)
+      error.status = response.status
+      throw new Error(`${config.name} API调用失败: ${classifyError(error).message}`)
+    }
+
+    await handleStreamResponse(response, onChunk, onReasoning)
+  } finally {
+    clearTimeout(timer)
   }
-
-  await handleStreamResponse(response, onChunk, onReasoning)
 }
 
 // ============ 向后兼容的导出函数 ============
@@ -542,18 +584,18 @@ export async function callDoubaoAPI(messages, apiKey, model = 'doubao-pro-32k-ch
   return callAI(messages, 'doubao', apiKey, model)
 }
 
-export async function callDeepSeekStream(messages, apiKey, model, onChunk) {
-  return callAIStream(messages, 'deepseek', apiKey, model, onChunk)
+export async function callDeepSeekStream(messages, apiKey, model, onChunk, options = {}) {
+  return callAIStream(messages, 'deepseek', apiKey, model, onChunk, null, options)
 }
 
-export async function callKimiStream(messages, apiKey, model, onChunk) {
-  return callAIStream(messages, 'kimi', apiKey, model, onChunk)
+export async function callKimiStream(messages, apiKey, model, onChunk, options = {}) {
+  return callAIStream(messages, 'kimi', apiKey, model, onChunk, null, options)
 }
 
-export async function callQianwenStream(messages, apiKey, model, onChunk) {
-  return callAIStream(messages, 'qianwen', apiKey, model, onChunk)
+export async function callQianwenStream(messages, apiKey, model, onChunk, options = {}) {
+  return callAIStream(messages, 'qianwen', apiKey, model, onChunk, null, options)
 }
 
-export async function callDoubaoStream(messages, apiKey, model, onChunk) {
-  return callAIStream(messages, 'doubao', apiKey, model, onChunk)
+export async function callDoubaoStream(messages, apiKey, model, onChunk, options = {}) {
+  return callAIStream(messages, 'doubao', apiKey, model, onChunk, null, options)
 }

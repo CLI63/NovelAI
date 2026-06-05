@@ -132,7 +132,6 @@ const markPendingInspirationsCompleted = async () => {
 // 全本一键生成
 const fullGenPrompt = ref('')  // 全本生成自定义提示词
 const {
-  fullGen,
   start: startFullGeneration,
   isRunning: isFullGenRunning
 } = useGlobalFullNovelGeneration()
@@ -341,9 +340,6 @@ const handleSaveAndFullGenerate = async () => {
 
   try {
     await startFullGeneration(id, fullGenPrompt.value)
-    if (fullGen.phase === 'completed') {
-      message.success(`全本生成完成，章节后处理将在后台继续执行。共 ${fullGen.results.length} 章`)
-    }
   } catch (error) {
     console.error('全本生成失败:', error)
     message.error('全本生成失败：' + error.message)
