@@ -173,6 +173,53 @@ function logApiDebug(...args) {
   }
 }
 
+const DEEPSEEK_PROVIDER = 'deepseek'
+const CUSTOM_OPENAI_PROVIDER = 'custom-openai'
+const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
+
+// 兼容历史 provider 入参，未知值统一回落到 DeepSeek。
+function normalizeProvider(provider) {
+  if (provider === CUSTOM_OPENAI_PROVIDER) {
+    return CUSTOM_OPENAI_PROVIDER
+  }
+  return DEEPSEEK_PROVIDER
+}
+
+// 统一清洗 Base URL，最终由代码自动补齐 chat/completions 路径。
+function normalizeBaseUrl(baseUrl = '') {
+  return String(baseUrl).trim().replace(/\/+$/, '')
+}
+
+function resolveCustomOpenAIUrl(options = {}) {
+  const normalizedBaseUrl = normalizeBaseUrl(
+    options.baseUrl || options.customBaseUrl || getSavedCustomOpenAIBaseUrl()
+  )
+  if (!normalizedBaseUrl) {
+    throw new Error('自定义 OpenAI 兼容接口缺少 Base URL 配置')
+  }
+  return `${normalizedBaseUrl}/chat/completions`
+}
+
+// 兜底从已保存设置中读取 Base URL，避免所有业务调用点都传一遍配置。
+function getSavedCustomOpenAIBaseUrl() {
+  try {
+    const savedSettings = localStorage.getItem('novelAISettings')
+    if (!savedSettings) return ''
+    const parsedSettings = JSON.parse(savedSettings)
+    return parsedSettings?.customOpenAIBaseUrl || ''
+  } catch {
+    return ''
+  }
+}
+
+function resolveProviderUrl(provider, options = {}) {
+  const normalizedProvider = normalizeProvider(provider)
+  if (normalizedProvider === CUSTOM_OPENAI_PROVIDER) {
+    return resolveCustomOpenAIUrl(options)
+  }
+  return getProviderConfig(normalizedProvider).url
+}
+
 /**
  * 带重试的 AI API 调用
  * @param {Array} messages - 消息数组
@@ -192,13 +239,14 @@ export async function callAIWithRetry(messages, provider, apiKey, model, options
   const maxRetries = options.maxRetries ?? retryConfig.maxRetries
   const retryDelay = options.retryDelay ?? retryConfig.retryDelay
   const timeout = getRequestTimeout(options)
+  const requestUrl = resolveProviderUrl(provider, options)
 
   let lastError = null
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const response = await apiClient.post(
-        config.url,
+        requestUrl,
         {
           model: useModel,
           messages,
@@ -272,13 +320,14 @@ export async function callAIStreamWithRetry(
   const maxRetries = options.maxRetries ?? retryConfig.maxRetries
   const retryDelay = options.retryDelay ?? retryConfig.retryDelay
   const timeout = getRequestTimeout(options)
+  const requestUrl = resolveProviderUrl(provider, options)
 
   let lastError = null
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const { controller, timer } = createTimeoutSignal(timeout)
     try {
-      const response = await fetch(config.url, {
+      const response = await fetch(requestUrl, {
         method: 'POST',
         signal: controller.signal,
         headers: {
@@ -342,29 +391,16 @@ export async function callAIStreamWithRetry(
  * 使用策略模式统一管理不同提供商的API配置
  */
 export const providerConfigs = {
-  kimi: {
-    name: 'Kimi',
-    url: 'https://api.moonshot.cn/v1/chat/completions',
-    defaultModel: 'kimi-k2-turbo-preview',
-    temperature: 1,
-  },
-  qianwen: {
-    name: '千问',
-    url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
-    defaultModel: 'qwen3-max',
-    temperature: 1,
-  },
   deepseek: {
     name: 'DeepSeek',
     url: 'https://api.deepseek.com/v1/chat/completions',
-    defaultModel: 'deepseek-chat',
+    defaultModel: DEEPSEEK_DEFAULT_MODEL,
     temperature: 1.0,
   },
-  doubao: {
-    name: '豆包',
-    url: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
-    defaultModel: 'doubao-pro-32k-chat',
-    temperature: 1,
+  'custom-openai': {
+    name: '自定义 OpenAI 兼容',
+    defaultModel: '',
+    temperature: 1.0,
   },
 }
 
@@ -374,7 +410,8 @@ export const providerConfigs = {
  * @returns {Object} 提供商配置
  */
 export function getProviderConfig(provider) {
-  const config = providerConfigs[provider]
+  const normalizedProvider = normalizeProvider(provider)
+  const config = providerConfigs[normalizedProvider]
   if (!config) {
     throw new Error(`不支持的AI提供商: ${provider}`)
   }
@@ -386,7 +423,8 @@ export function getProviderConfig(provider) {
  * @returns {string[]} 提供商名称列表
  */
 export function getSupportedProviders() {
-  return Object.keys(providerConfigs)
+  // 对外只暴露当前允许的两个入口，避免重新放开任意 provider 名称。
+  return [DEEPSEEK_PROVIDER, CUSTOM_OPENAI_PROVIDER]
 }
 
 // Axios实例
@@ -440,10 +478,11 @@ export async function callAI(messages, provider, apiKey, model, options = {}) {
   const useModel = model || config.defaultModel
   const temperature = options.temperature ?? config.temperature
   const timeout = getRequestTimeout(options)
+  const requestUrl = resolveProviderUrl(provider, options)
 
   try {
     const response = await apiClient.post(
-      config.url,
+      requestUrl,
       {
         model: useModel,
         messages,
@@ -535,10 +574,11 @@ export async function callAIStream(messages, provider, apiKey, model, onChunk, o
   const useModel = model || config.defaultModel
   const temperature = options.temperature ?? config.temperature
   const timeout = getRequestTimeout(options)
+  const requestUrl = resolveProviderUrl(provider, options)
   const { controller, timer } = createTimeoutSignal(timeout)
 
   try {
-    const response = await fetch(config.url, {
+    const response = await fetch(requestUrl, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -566,36 +606,36 @@ export async function callAIStream(messages, provider, apiKey, model, onChunk, o
 }
 
 // ============ 向后兼容的导出函数 ============
-// 这些函数保留以保持向后兼容性，但内部使用统一的callAI函数
+// 旧函数名继续保留，避免历史 import 直接失效，但底层统一改走 DeepSeek。
 
-export async function callKimiAPI(messages, apiKey, model = 'kimi-k2-turbo-preview') {
-  return callAI(messages, 'kimi', apiKey, model)
-}
-
-export async function callQianwenAPI(messages, apiKey, model = 'qwen3-max') {
-  return callAI(messages, 'qianwen', apiKey, model)
-}
-
-export async function callDeepSeekAPI(messages, apiKey, model = 'deepseek-chat') {
+export async function callDeepSeekAPI(messages, apiKey, model = DEEPSEEK_DEFAULT_MODEL) {
   return callAI(messages, 'deepseek', apiKey, model)
-}
-
-export async function callDoubaoAPI(messages, apiKey, model = 'doubao-pro-32k-chat') {
-  return callAI(messages, 'doubao', apiKey, model)
 }
 
 export async function callDeepSeekStream(messages, apiKey, model, onChunk, options = {}) {
   return callAIStream(messages, 'deepseek', apiKey, model, onChunk, null, options)
 }
 
+export async function callKimiAPI(messages, apiKey, model = DEEPSEEK_DEFAULT_MODEL) {
+  return callDeepSeekAPI(messages, apiKey, model)
+}
+
+export async function callQianwenAPI(messages, apiKey, model = DEEPSEEK_DEFAULT_MODEL) {
+  return callDeepSeekAPI(messages, apiKey, model)
+}
+
+export async function callDoubaoAPI(messages, apiKey, model = DEEPSEEK_DEFAULT_MODEL) {
+  return callDeepSeekAPI(messages, apiKey, model)
+}
+
 export async function callKimiStream(messages, apiKey, model, onChunk, options = {}) {
-  return callAIStream(messages, 'kimi', apiKey, model, onChunk, null, options)
+  return callDeepSeekStream(messages, apiKey, model, onChunk, options)
 }
 
 export async function callQianwenStream(messages, apiKey, model, onChunk, options = {}) {
-  return callAIStream(messages, 'qianwen', apiKey, model, onChunk, null, options)
+  return callDeepSeekStream(messages, apiKey, model, onChunk, options)
 }
 
 export async function callDoubaoStream(messages, apiKey, model, onChunk, options = {}) {
-  return callAIStream(messages, 'doubao', apiKey, model, onChunk, null, options)
+  return callDeepSeekStream(messages, apiKey, model, onChunk, options)
 }

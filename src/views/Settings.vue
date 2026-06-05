@@ -1,24 +1,48 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useAppStore } from '@/stores/app'
-import { useAI } from '@/composables/useAI'
 import { message, Modal } from 'ant-design-vue'
 import db from '@/utils/db'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 const appStore = useAppStore()
-const { testConnection, loading: aiLoading } = useAI()
+
+const DEEPSEEK_PROVIDER = 'deepseek'
+const CUSTOM_OPENAI_PROVIDER = 'custom-openai'
+
+// 仅保留 DeepSeek 与自定义 OpenAI 兼容两种入口。
+const providerConfig = {
+  [DEEPSEEK_PROVIDER]: {
+    name: 'DeepSeek',
+    icon: '🤖',
+    company: '深度求索',
+    apiKeyLabel: 'DeepSeek API Key',
+    modelPlaceholder: '例如：deepseek-v4-flash',
+    modelHint: 'DeepSeek 模型名称，默认：deepseek-v4-flash',
+    platformUrl: 'https://platform.deepseek.com/',
+    platformText: '访问 DeepSeek 平台获取 API Key',
+  },
+  [CUSTOM_OPENAI_PROVIDER]: {
+    name: '自定义 OpenAI 兼容',
+    icon: '🧩',
+    company: 'OpenAI Compatible',
+    apiKeyLabel: '自定义 API Key',
+    modelPlaceholder: '例如：gpt-4o-mini',
+    modelHint: '仅支持 OpenAI Chat Completions 兼容接口，模型名称需由用户自行填写',
+    baseUrlPlaceholder: '例如：https://api.openai.com/v1',
+    baseUrlHint: '请输入 Base URL，系统会自动拼接为 Base URL + /chat/completions',
+    platformUrl: '',
+    platformText: '仅支持 OpenAI 兼容接口',
+  },
+}
 
 const form = ref({
-  aiProvider: 'kimi',
-  kimiApiKey: '',
-  qianwenApiKey: '',
+  aiProvider: DEEPSEEK_PROVIDER,
   deepseekApiKey: '',
-  doubaoApiKey: '',
-  kimiModel: 'kimi-k2-turbo-preview',
-  qianwenModel: 'qwen3-max',
-  deepseekModel: 'deepseek-chat',
-  doubaoModel: 'doubao-pro-32k-chat',
+  deepseekModel: 'deepseek-v4-flash',
+  customOpenAIBaseUrl: '',
+  customOpenAIApiKey: '',
+  customOpenAIModel: '',
   timeout: 180000,
   // 字数补偿配置
   wordCountCompensation: true,
@@ -31,74 +55,48 @@ const loading = ref(false)
 const activeTab = ref('api')
 const BACKUP_VERSION = '2.0'
 
-// 提供商配置
-const providerConfig = {
-  kimi: {
-    name: 'Kimi',
-    icon: '🌙',
-    company: '月之暗面',
-    apiKeyLabel: 'Kimi API Key',
-    modelPlaceholder: '例如：kimi-k2-turbo-preview',
-    modelHint: 'Kimi模型名称，默认：kimi-k2-turbo-preview',
-    platformUrl: 'https://platform.moonshot.cn/',
-    platformText: '访问 Kimi 平台获取 API Key',
-  },
-  qianwen: {
-    name: '千问',
-    icon: '☁️',
-    company: '阿里云',
-    apiKeyLabel: '千问 API Key',
-    modelPlaceholder: '例如：qwen3-max',
-    modelHint: '千问模型名称，默认：qwen3-max',
-    platformUrl: 'https://dashscope.aliyuncs.com/',
-    platformText: '访问千问平台获取 API Key',
-  },
-  deepseek: {
-    name: 'DeepSeek',
-    icon: '🤖',
-    company: '深度求索',
-    apiKeyLabel: 'DeepSeek API Key',
-    modelPlaceholder: '例如：deepseek-chat',
-    modelHint: 'DeepSeek模型名称，默认：deepseek-chat，也支持：deepseek-reasoner',
-    platformUrl: 'https://platform.deepseek.com/',
-    platformText: '访问 DeepSeek 平台获取 API Key',
-  },
-  doubao: {
-    name: '豆包',
-    icon: '🫛',
-    company: '字节跳动',
-    apiKeyLabel: '豆包 API Key',
-    modelPlaceholder: '例如：doubao-pro-32k-chat',
-    modelHint: '豆包模型名称，默认：doubao-pro-32k-chat',
-    platformUrl: 'https://console.volcengine.com/ark',
-    platformText: '访问火山引擎控制台获取 API Key',
-  },
-}
+// 当前 provider 的界面展示与提示文案。
+const currentProviderConfig = computed(() => providerConfig[form.value.aiProvider] || providerConfig[DEEPSEEK_PROVIDER])
 
-// 当前提供商配置
-const currentProviderConfig = computed(() => providerConfig[form.value.aiProvider] || providerConfig.kimi)
-
-// 当前API Key
+// 当前 API Key 根据 provider 动态映射。
 const currentApiKey = computed({
   get: () => {
-    const provider = form.value.aiProvider
-    return form.value[`${provider}ApiKey`] || ''
+    if (form.value.aiProvider === CUSTOM_OPENAI_PROVIDER) {
+      return form.value.customOpenAIApiKey || ''
+    }
+    return form.value.deepseekApiKey || ''
   },
   set: (val) => {
-    const provider = form.value.aiProvider
-    form.value[`${provider}ApiKey`] = val
+    if (form.value.aiProvider === CUSTOM_OPENAI_PROVIDER) {
+      form.value.customOpenAIApiKey = val
+      return
+    }
+    form.value.deepseekApiKey = val
   },
 })
 
-// 当前模型
+// 当前模型根据 provider 动态映射。
 const currentModel = computed({
   get: () => {
-    const provider = form.value.aiProvider
-    return form.value[`${provider}Model`] || ''
+    if (form.value.aiProvider === CUSTOM_OPENAI_PROVIDER) {
+      return form.value.customOpenAIModel || ''
+    }
+    return form.value.deepseekModel || ''
   },
   set: (val) => {
-    const provider = form.value.aiProvider
-    form.value[`${provider}Model`] = val
+    if (form.value.aiProvider === CUSTOM_OPENAI_PROVIDER) {
+      form.value.customOpenAIModel = val
+      return
+    }
+    form.value.deepseekModel = val
+  },
+})
+
+// 自定义 OpenAI 兼容入口需要额外维护 Base URL。
+const currentBaseUrl = computed({
+  get: () => form.value.customOpenAIBaseUrl || '',
+  set: (val) => {
+    form.value.customOpenAIBaseUrl = val
   },
 })
 
@@ -110,7 +108,11 @@ const thresholdPercent = computed({
 
 // 加载设置
 const loadSettings = () => {
-  form.value = { ...appStore.settings }
+  // 加载本地设置时保留用户当前选择的入口，并补齐新增字段。
+  form.value = {
+    ...form.value,
+    ...appStore.settings,
+  }
 }
 
 // 保存设置
@@ -120,9 +122,22 @@ const handleSave = () => {
     return
   }
 
+  if (form.value.aiProvider === CUSTOM_OPENAI_PROVIDER) {
+    if (!currentBaseUrl.value) {
+      message.warning('请输入自定义 OpenAI 兼容接口的 Base URL')
+      return
+    }
+
+    if (!currentModel.value) {
+      message.warning('请输入自定义 OpenAI 兼容接口的模型名称')
+      return
+    }
+  }
+
   loading.value = true
   try {
-    appStore.updateSettings(form.value)
+    // 保存时保留两套配置，但当前运行入口由 aiProvider 决定。
+    appStore.updateSettings({ ...form.value })
     message.success('保存成功')
   } catch (error) {
     message.error('保存失败：' + error.message)
@@ -138,6 +153,18 @@ const handleTest = async () => {
     return
   }
 
+  if (form.value.aiProvider === CUSTOM_OPENAI_PROVIDER) {
+    if (!currentBaseUrl.value) {
+      message.warning('请先输入 Base URL')
+      return
+    }
+
+    if (!currentModel.value) {
+      message.warning('请先输入模型名称')
+      return
+    }
+  }
+
   loading.value = true
   try {
     const { callAI } = await import('@/utils/api')
@@ -146,7 +173,10 @@ const handleTest = async () => {
       form.value.aiProvider,
       currentApiKey.value,
       currentModel.value,
-      { timeout: form.value.timeout }
+      {
+        timeout: form.value.timeout,
+        baseUrl: form.value.aiProvider === CUSTOM_OPENAI_PROVIDER ? currentBaseUrl.value : '',
+      }
     )
     if (response.includes('测试成功')) {
       message.success('API连接测试成功！')
@@ -331,7 +361,7 @@ onMounted(() => {
     <!-- 页面头部 -->
     <PageHeader
       title="系统设置"
-      subtitle="配置AI提供商、API密钥和其他系统参数"
+      subtitle="配置 DeepSeek 或自定义 OpenAI 兼容接口"
       icon="⚙️"
     />
 
@@ -347,19 +377,19 @@ onMounted(() => {
             </span>
           </template>
           <div class="section-header">
-            <h3 class="section-title">AI 提供商配置</h3>
-            <p class="section-desc">选择您偏好的AI服务提供商并配置API密钥</p>
+            <h3 class="section-title">AI 配置</h3>
+            <p class="section-desc">支持 DeepSeek 预置入口与自定义 OpenAI 兼容接口</p>
           </div>
 
           <a-form layout="vertical" class="settings-form">
-            <!-- 提供商选择 -->
+            <!-- 仅保留两个 provider 入口：DeepSeek 与自定义 OpenAI 兼容。 -->
             <a-form-item label="AI提供商">
               <div class="provider-grid">
                 <div
                   v-for="(config, key) in providerConfig"
                   :key="key"
                   class="provider-card"
-                  :class="{ active: form.aiProvider === key }"
+                  :class="{ 'provider-card-active': form.aiProvider === key }"
                   @click="form.aiProvider = key"
                 >
                   <div v-if="form.aiProvider === key" class="provider-check">✓</div>
@@ -372,6 +402,16 @@ onMounted(() => {
               </div>
             </a-form-item>
 
+            <!-- 自定义 OpenAI 兼容入口额外需要填写 Base URL。 -->
+            <a-form-item v-if="form.aiProvider === CUSTOM_OPENAI_PROVIDER" label="Base URL">
+              <a-input
+                v-model:value="currentBaseUrl"
+                placeholder="例如：https://api.openai.com/v1"
+                size="large"
+              />
+              <div class="input-hint">{{ currentProviderConfig.baseUrlHint }}</div>
+            </a-form-item>
+
             <!-- API Key -->
             <a-form-item :label="currentProviderConfig.apiKeyLabel">
               <a-input-password
@@ -379,12 +419,13 @@ onMounted(() => {
                 placeholder="请输入API Key"
                 size="large"
               />
-              <div class="input-hint">
+              <div v-if="currentProviderConfig.platformUrl" class="input-hint">
                 <a :href="currentProviderConfig.platformUrl" target="_blank" class="hint-link">
                   <span class="link-icon">🔗</span>
                   {{ currentProviderConfig.platformText }}
                 </a>
               </div>
+              <div v-else class="input-hint">{{ currentProviderConfig.platformText }}</div>
             </a-form-item>
 
             <!-- 模型名称 -->
@@ -616,7 +657,7 @@ onMounted(() => {
 
 .provider-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacing-md);
 }
 
@@ -639,7 +680,7 @@ onMounted(() => {
   box-shadow: var(--shadow-md);
 }
 
-.provider-card.active {
+.provider-card-active {
   border-color: var(--primary-color);
   background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.08) 100%);
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
