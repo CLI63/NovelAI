@@ -280,11 +280,8 @@ const handleSaveAndFullGenerate = async () => {
     return
   }
 
-  if (!fullGen.checkApiKeySetup()) {
-    message.warning('请先在设置中配置 API Key')
-    router.push('/settings')
-    return
-  }
+  // 复用页面统一的 API Key 校验入口，避免局部变量调整后遗漏引用。
+  if (!checkApiKey()) return
 
   const novel = {
     title: String(generatedOverview.value.title || ''),

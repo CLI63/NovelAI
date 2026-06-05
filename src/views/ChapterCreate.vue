@@ -499,8 +499,8 @@ const doSaveStreamChapter = async () => {
           }
         }
         const { id: taskId } = await ensureChapterPostProcessTask(taskData)
-        console.log('已创建章节后处理任务，ID:', taskId)
-        
+
+        // 创建任务后立即广播事件，由全局后台面板接管后续执行。
         // 发送事件通知全局后台面板自动执行
         await eventBus.emitAsync(EVENTS.TASK_CREATED, { id: taskId, ...taskData })
       } catch (err) {

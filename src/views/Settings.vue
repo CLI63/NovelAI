@@ -270,6 +270,9 @@ const handleImportData = async (event) => {
       throw new Error('无效的备份文件格式')
     }
 
+    // 确认前只是预解析文件，先结束解析态；真正导入时再进入完整 loading。
+    loading.value = false
+
     Modal.confirm({
       title: '📦 导入数据确认',
       content: `即将导入 ${importTableNames.length} 张表、${importCount} 条数据。现有数据将被覆盖，是否继续？`,
@@ -277,6 +280,7 @@ const handleImportData = async (event) => {
       cancelText: '取消',
       centered: true,
       onOk: async () => {
+        loading.value = true
         try {
           // 只处理当前数据库实际存在的表，保证旧备份和未来多余字段都能安全跳过。
           for (const table of db.tables) {
@@ -299,13 +303,21 @@ const handleImportData = async (event) => {
           message.success('导入成功，请刷新页面查看')
         } catch (err) {
           message.error('导入数据时出错：' + err.message)
+        } finally {
+          loading.value = false
         }
       },
+      onCancel: () => {
+        // 取消导入时显式清理状态，避免按钮残留忙碌样式。
+        loading.value = false
+      }
     })
   } catch (error) {
     message.error('解析文件失败：' + error.message)
   } finally {
-    loading.value = false
+    if (loading.value) {
+      loading.value = false
+    }
   }
 }
 

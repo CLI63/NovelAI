@@ -42,10 +42,13 @@ const editing = ref(false)
 const feedback = ref('')
 
 // 上一章/下一章
-const { prev: prevChapter, next: nextChapter } = computed(() => {
+// computed 返回的是 ComputedRef，先聚合再拆分才能保持 prev/next 的响应式能力。
+const prevNextChapter = computed(() => {
   if (!chapter.value || !chapters.value?.length) return { prev: null, next: null }
   return getPrevNextChapter(chapter.value.chapterNumber)
 })
+const prevChapter = computed(() => prevNextChapter.value.prev)
+const nextChapter = computed(() => prevNextChapter.value.next)
 
 // 加载数据
 const loadData = async () => {
